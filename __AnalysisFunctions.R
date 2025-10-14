@@ -1743,10 +1743,8 @@ create_survey_object <- function(data, weight_var) {
 load_and_prepare_data <- function(config, index_definitions = list(), custom_var_labels = NULL, custom_val_labels = NULL) {
   cat("\nLade Daten aus:", DATA_FILE, "\n")
   
-  # Prüfen ob Datendatei existiert
   check_file_exists(DATA_FILE)
   
-  # Daten basierend auf Dateiendung laden
   file_ext <- get_file_extension(DATA_FILE)
   
   data <- switch(file_ext,
@@ -1762,10 +1760,26 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   cat("Sanitize alle Variablennamen...\n")
   names(data) <- make.names(names(data))
   
-  # 2. CONFIG AN SANITIERTE NAMEN ANPASSEN
+  # 2. BASIS-DATENAUFBEREITUNG (ohne Custom Variables)
+  data <- convert_text_nas(data, config)
+  data <- apply_reverse_coding(data, config)
+  data <- create_numeric_versions(data, config)
+  
+  # 3. SURVEY-INDIZES ERSTELLEN (vor Custom Variables!)
+  cat("Erstelle Survey-Indizes...\n")
+  index_result <- create_survey_indices(data, config, index_definitions)
+  data <- index_result$data
+  config <- index_result$config
+  
+  # 4. CUSTOM VARIABLES ERSTELLEN (jetzt können sie auf Indices zugreifen)
+  cat("Erstelle Custom-Variablen...\n")
+  data <- add_custom_vars(data)
+  
+  # 5. CONFIG AN ALLE VARIABLEN ANPASSEN (jetzt mit Indices + Custom Variables!)
+  cat("Aktualisiere Config für sanitierte Variablennamen...\n")
   config <- update_config_variable_names(config, data)
   
-  # 3. GEWICHTUNGSVARIABLE PRÜFEN
+  # 6. GEWICHTUNGSVARIABLE PRÜFEN
   if (WEIGHTS) {
     WEIGHT_VAR_SANITIZED <- make.names(WEIGHT_VAR)
     if (!WEIGHT_VAR_SANITIZED %in% names(data)) {
@@ -1776,28 +1790,17 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
     }
   }
   
-  # 4. BASIS-DATENAUFBEREITUNG (ohne Custom Variables)
-  data <- convert_text_nas(data, config)
-  data <- apply_reverse_coding(data, config)
-  data <- create_numeric_versions(data, config)
+  # 7. LABELS ANWENDEN (für alle Variablen)
+  data <- apply_variable_labels(data, custom_var_labels, custom_val_labels)
   
-  # 5. SURVEY-INDIZES ERSTELLEN
-  index_result <- create_survey_indices(data, config, index_definitions)
-  data <- index_result$data
-  config <- index_result$config
-
-  data <- add_custom_vars(data)  # Erst Custom Variables
-  data <- apply_variable_labels(data, custom_var_labels, custom_val_labels)  # Dann Labels (auch für neue Variables)
-  
-  # 6. WEITERE AUFBEREITUNG
+  # 8. WEITERE AUFBEREITUNG
   category_info <- auto_detect_categories(data, config)
   data <- category_info$data
   
-  # 8. METADATEN ENTFERNEN
+  # 9. METADATEN ENTFERNEN
   data <- data %>% select(-any_of(meta_vars_to_remove))
   
-  # 9. Variablentypen setzen
-  # data <- prepare_variable_types(data, config)
+  # 10. VARIABLENTYPEN SETZEN
   data <- prepare_variable_types_minimal(data, config)
   
   cat("Datenaufbereitung abgeschlossen.\n")
@@ -1808,8 +1811,6 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
     config = config
   ))
 }
-
-
 
 
 # =============================================================================
@@ -6000,7 +6001,7 @@ main <- function() {
   # 3. Daten laden und vorbereiten
   cat("\n3. DATEN LADEN UND VORBEREITEN\n")
   cat("-------------------------------\n")
-  prepared_data <- load_and_prepare_data(config)
+  prepared_data <- load_and_prepare_data(config, index_definitions, custom_var_labels, custom_val_labels)
   
   # 4. Deskriptive Analysen
   cat("\n4. DESKRIPTIVE STATISTIKEN\n")
