@@ -746,8 +746,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       
       # Daten für dieses Item
       if (!use_na) {
-        item_data <- data[!is.na(data[[var]]), ]
-        item_values <- item_data[[var]]
+        item_values <- data[[var]][!is.na(data[[var]])]
       } else {
         item_values <- data[[var]]
       }
@@ -807,10 +806,26 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
             stringsAsFactors = FALSE
           )
         } else {
-          # Für ordinale Matrix: Verwende nur gültige Werte für Statistiken (unverändert)
+          # Für ordinale Matrix: Berechne N konsistent mit kategorialer Tabelle
+          
+          # Bei Gewichtung: Summe der Gewichte; sonst: Anzahl gültiger Werte
+          if (!is.null(survey_obj) && WEIGHTS) {
+            # Gewichtetes N: Summe der Gewichte für gültige Werte
+            if (!use_na) {
+              valid_indices <- !is.na(data[[var]]) & !is.na(numeric_values)
+            } else {
+              valid_indices <- !is.na(numeric_values)
+            }
+            weighted_n <- sum(data[[WEIGHT_VAR]][valid_indices], na.rm = TRUE)
+            n_value <- round(weighted_n, DIGITS_ROUND)
+          } else {
+            # Ungewichtetes N: Anzahl gültiger Werte
+            n_value <- length(valid_numeric_values)
+          }
+          
           stats_row <- data.frame(
             Item = item_label,
-            N = length(valid_numeric_values),
+            N = n_value,
             Mittelwert = round(mean(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
             Median = round(median(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
             Q1 = round(as.numeric(quantile(valid_numeric_values, 0.25, na.rm = TRUE)), DIGITS_ROUND),
@@ -2453,10 +2468,10 @@ create_labeled_factor <- function(data, var_name, config) {
     return(data[[var_name]])  # Gib numerische Variable unverändert zurück
   }
   
-
+  
   # Originale Werte
   original_values <- data[[var_name]]
-
+  
   labels_found <- FALSE
   labels <- NULL
   
@@ -2985,11 +3000,20 @@ create_matrix_numeric_crosstab <- function(data, matrix_vars, group_var, unique_
       group_numeric <- group_numeric[!is.na(group_numeric)]
       
       if (length(group_numeric) > 0) {
-        # Ungewichtete Statistiken (Survey-Gewichtung für Matrix-Items ist komplex)
+        # Statistiken berechnen
         group_mean <- mean(group_numeric, na.rm = TRUE)
         group_median <- median(group_numeric, na.rm = TRUE)
         group_sd <- sd(group_numeric, na.rm = TRUE)
-        group_n <- length(group_numeric)
+        
+        # N-Berechnung: Bei Gewichtung Summe der Gewichte, sonst Anzahl
+        if (!is.null(survey_obj) && WEIGHTS && WEIGHT_VAR %in% names(data)) {
+          # Gewichtetes N: Summe der Gewichte für diese Gruppe mit gültigen Werten
+          valid_group_indices <- group_indices & !is.na(numeric_values)
+          group_n <- round(sum(data[[WEIGHT_VAR]][valid_group_indices], na.rm = TRUE), DIGITS_ROUND)
+        } else {
+          # Ungewichtetes N: Anzahl gültiger Werte
+          group_n <- length(group_numeric)
+        }
         
         result_row[[paste0(group, "_Mean")]] <- round(group_mean, DIGITS_ROUND)
         result_row[[paste0(group, "_Median")]] <- round(group_median, DIGITS_ROUND)
@@ -3554,7 +3578,7 @@ create_crosstabs <- function(prepared_data) {
     
     # Kreuztabelle erstellen (config ist jetzt optional)
     crosstab_result <- create_contingency_table(data, var1, var2, survey_obj, config)
-
+    
     # Statistischen Test durchführen (nur für normale Kreuztabellen)
     test_result <- NULL
     if (!is.null(crosstab_result) && !"matrix_items" %in% names(crosstab_result)) {
