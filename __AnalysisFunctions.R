@@ -735,7 +735,29 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     }
   }
   
-  if (has_coding || is_dichotomous_matrix || is_ordinal_matrix) {
+  # AUTOMATISCHE ERKENNUNG: Prüfe ob die tatsächlichen Werte numerisch sind
+  is_numeric_matrix <- FALSE
+  if (!has_coding && !is_dichotomous_matrix && !is_ordinal_matrix) {
+    # Sammle Stichprobe von Werten aus allen Matrix-Items
+    sample_values <- c()
+    for (var in matrix_vars[1:min(3, length(matrix_vars))]) {  # Prüfe max. 3 Items
+      var_values <- data[[var]][!is.na(data[[var]]) & data[[var]] != ""]
+      sample_values <- c(sample_values, as.character(var_values[1:min(20, length(var_values))]))
+    }
+    
+    # Prüfe ob die Werte numerisch konvertierbar sind
+    numeric_test <- suppressWarnings(as.numeric(sample_values))
+    proportion_numeric <- sum(!is.na(numeric_test)) / length(numeric_test)
+    
+    # Wenn > 80% der Werte numerisch sind, behandle als numerische Matrix
+    if (proportion_numeric > 0.8 && length(unique(numeric_test[!is.na(numeric_test)])) > 2) {
+      is_numeric_matrix <- TRUE
+      cat("Numerische Matrix automatisch erkannt (", round(proportion_numeric * 100, 1), 
+          "% numerische Werte)\n", sep = "")
+    }
+  }
+  
+  if (has_coding || is_dichotomous_matrix || is_ordinal_matrix || is_numeric_matrix) {
     cat("Matrix hat Kodierung oder ist dichotom - erstelle zusätzliche numerische Statistiken\n")
     
     # Erstelle numerische Statistik-Tabelle
@@ -746,15 +768,19 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       
       # Daten für dieses Item
       if (!use_na) {
-        item_values <- data[[var]][!is.na(data[[var]])]
+        item_data <- data[!is.na(data[[var]]), ]
+        item_values <- item_data[[var]]
       } else {
         item_values <- data[[var]]
       }
       
       # NEUE LOGIK: Unterscheide zwischen dichotom und ordinal basierend auf Kodierung
       if (is.na(var_config$coding) || var_config$coding == "") {  
-        # Keine Kodierung - verwende Rohwerte
+        # Keine Kodierung - verwende Rohwerte (funktioniert jetzt auch für automatisch erkannte numerische Matrizen)
         numeric_values <- suppressWarnings(as.numeric(as.character(item_values)))
+        if (is_numeric_matrix) {
+          cat("  Automatische numerische Konvertierung für", var, "\n")
+        }
       } else {
         # Kodierung vorhanden - prüfe Typ
         labels <- parse_coding(var_config$coding)
@@ -806,26 +832,10 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
             stringsAsFactors = FALSE
           )
         } else {
-          # Für ordinale Matrix: Berechne N konsistent mit kategorialer Tabelle
-          
-          # Bei Gewichtung: Summe der Gewichte; sonst: Anzahl gültiger Werte
-          if (!is.null(survey_obj) && WEIGHTS) {
-            # Gewichtetes N: Summe der Gewichte für gültige Werte
-            if (!use_na) {
-              valid_indices <- !is.na(data[[var]]) & !is.na(numeric_values)
-            } else {
-              valid_indices <- !is.na(numeric_values)
-            }
-            weighted_n <- sum(data[[WEIGHT_VAR]][valid_indices], na.rm = TRUE)
-            n_value <- round(weighted_n, DIGITS_ROUND)
-          } else {
-            # Ungewichtetes N: Anzahl gültiger Werte
-            n_value <- length(valid_numeric_values)
-          }
-          
+          # Für ordinale Matrix: Verwende nur gültige Werte für Statistiken (unverändert)
           stats_row <- data.frame(
             Item = item_label,
-            N = n_value,
+            N = length(valid_numeric_values),
             Mittelwert = round(mean(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
             Median = round(median(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
             Q1 = round(as.numeric(quantile(valid_numeric_values, 0.25, na.rm = TRUE)), DIGITS_ROUND),
@@ -849,6 +859,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       # Bestimme Rückgabe-Typ
       matrix_type <- if (is_dichotomous_matrix) "matrix_dichotomous" 
       else if (is_ordinal_matrix) "matrix_ordinal" 
+      else if (is_numeric_matrix) "matrix_numeric"  # Automatisch erkannte numerische Matrix
       else "matrix_ordinal"  # Default für Matrices mit Kodierung
       
       # Füge numerische Tabelle zum Rückgabeobjekt hinzu
@@ -3000,20 +3011,11 @@ create_matrix_numeric_crosstab <- function(data, matrix_vars, group_var, unique_
       group_numeric <- group_numeric[!is.na(group_numeric)]
       
       if (length(group_numeric) > 0) {
-        # Statistiken berechnen
+        # Ungewichtete Statistiken (Survey-Gewichtung für Matrix-Items ist komplex)
         group_mean <- mean(group_numeric, na.rm = TRUE)
         group_median <- median(group_numeric, na.rm = TRUE)
         group_sd <- sd(group_numeric, na.rm = TRUE)
-        
-        # N-Berechnung: Bei Gewichtung Summe der Gewichte, sonst Anzahl
-        if (!is.null(survey_obj) && WEIGHTS && WEIGHT_VAR %in% names(data)) {
-          # Gewichtetes N: Summe der Gewichte für diese Gruppe mit gültigen Werten
-          valid_group_indices <- group_indices & !is.na(numeric_values)
-          group_n <- round(sum(data[[WEIGHT_VAR]][valid_group_indices], na.rm = TRUE), DIGITS_ROUND)
-        } else {
-          # Ungewichtetes N: Anzahl gültiger Werte
-          group_n <- length(group_numeric)
-        }
+        group_n <- length(group_numeric)
         
         result_row[[paste0(group, "_Mean")]] <- round(group_mean, DIGITS_ROUND)
         result_row[[paste0(group, "_Median")]] <- round(group_median, DIGITS_ROUND)
@@ -3887,12 +3889,12 @@ perform_correlation_test <- function(data, var1, var2, survey_obj = NULL) {
     return(perform_pearson_correlation(complete_data, var1, var2, survey_obj))
   }
   
-  # 2. BEIDE NOMINAL → Cramér's V (basierend auf Chi²)
+  # 2. BEIDE NOMINAL → Cramér's V (basierend auf ChiÂ²)
   if (!var1_is_numeric && !var2_is_numeric) {
     return(perform_cramers_v(complete_data, var1, var2, survey_obj))
   }
   
-  # 3. EINE NUMERISCH, EINE NOMINAL → Eta² (Korrelationsverhältnis)
+  # 3. EINE NUMERISCH, EINE NOMINAL → EtaÂ² (Korrelationsverhältnis)
   if ((var1_is_numeric && !var2_is_numeric) || (!var1_is_numeric && var2_is_numeric)) {
     numeric_var <- if(var1_is_numeric) var1 else var2
     nominal_var <- if(var1_is_numeric) var2 else var1
@@ -4014,7 +4016,7 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
       n <- sum(contingency_table)
     }
     
-    # Cramér's V = sqrt(Chi² / (n * (min(r,c) - 1)))
+    # Cramér's V = sqrt(ChiÂ² / (n * (min(r,c) - 1)))
     min_dim <- min(length(unique(data[[var1]])), length(unique(data[[var2]]))) - 1
     cramers_v <- sqrt(chi2_stat / (n * min_dim))
     
@@ -4036,19 +4038,19 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
   })
 }
 
-# 3. Eta² für numerisch × nominal
+# 3. EtaÂ² für numerisch ö— nominal
 perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NULL) {
   
   tryCatch({
     if (!is.null(survey_obj) && WEIGHTS) {
-      # Gewichtetes Eta²
+      # Gewichtetes EtaÂ²
       survey_complete <- subset(survey_obj, !is.na(get(numeric_var)) & !is.na(get(nominal_var)))
       
-      # ANOVA für Eta²
+      # ANOVA für EtaÂ²
       anova_model <- svyglm(as.formula(paste(numeric_var, "~", nominal_var)), survey_complete)
       anova_result <- anova(anova_model)
       
-      # Eta² = SS_between / SS_total
+      # EtaÂ² = SS_between / SS_total
       ss_between <- anova_result$`Sum Sq`[1]
       ss_total <- sum(anova_result$`Sum Sq`, na.rm = TRUE)
       eta_squared <- ss_between / ss_total
@@ -4056,12 +4058,12 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
       p_value <- anova_result$`Pr(>F)`[1]
       
     } else {
-      # Ungewichtetes Eta²
+      # Ungewichtetes EtaÂ²
       # ANOVA durchführen
       anova_result <- aov(as.formula(paste(numeric_var, "~", nominal_var)), data = data)
       anova_summary <- summary(anova_result)
       
-      # Eta² = SS_between / SS_total
+      # EtaÂ² = SS_between / SS_total
       ss_between <- anova_summary[[1]]$`Sum Sq`[1]
       ss_total <- sum(anova_summary[[1]]$`Sum Sq`)
       eta_squared <- ss_between / ss_total
@@ -4070,7 +4072,7 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
     }
     
     return(list(
-      test = "Eta² (Korrelationsverhältnis)",
+      test = "EtaÂ² (Korrelationsverhältnis)",
       statistic = round(eta_squared, DIGITS_ROUND),
       p_value = round(p_value, 4),
       result = if(p_value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant",
@@ -4079,8 +4081,8 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
     
   }, error = function(e) {
     return(list(
-      test = "Eta²", 
-      result = paste("Fehler bei Eta²:", e$message), 
+      test = "EtaÂ²", 
+      result = paste("Fehler bei EtaÂ²:", e$message), 
       p_value = NA, 
       statistic = NA
     ))
@@ -4435,7 +4437,7 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
     fitted_values <- fitted(model)
     observed_values <- survey_complete$variables[, all.vars(formula_obj)[1]]
     
-    # Bessere R² Berechnung für gewichtete Regression
+    # Bessere RÂ² Berechnung für gewichtete Regression
     ss_res <- sum((observed_values - fitted_values)^2)
     ss_tot <- sum((observed_values - mean(observed_values))^2)
     r_squared <- 1 - (ss_res / ss_tot)
@@ -4448,10 +4450,10 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
     
     # Modell-Güte für gewichtete Regression
     model_fit <- data.frame(
-      Kennwert = c("R²", "Adjustiertes R²", "F-Statistik", "p-Wert (Modell)", "N"),
+      Kennwert = c("RÂ²", "Adjustiertes RÂ²", "F-Statistik", "p-Wert (Modell)", "N"),
       Wert = c(
         round(r_squared, DIGITS_ROUND),
-        round(1 - (1 - r_squared) * (n - 1) / (n - p - 1), DIGITS_ROUND),  # Adj. R²
+        round(1 - (1 - r_squared) * (n - 1) / (n - p - 1), DIGITS_ROUND),  # Adj. RÂ²
         round(f_stat, DIGITS_ROUND),
         round(f_p_value, 4),
         n
@@ -4477,7 +4479,7 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
     
     # Modell-Güte für ungewichtete Regression
     model_fit <- data.frame(
-      Kennwert = c("R²", "Adjustiertes R²", "F-Statistik", "p-Wert (Modell)", "N"),
+      Kennwert = c("RÂ²", "Adjustiertes RÂ²", "F-Statistik", "p-Wert (Modell)", "N"),
       Wert = c(
         round(r_squared, DIGITS_ROUND),
         round(model_summary$adj.r.squared, DIGITS_ROUND),
@@ -4542,25 +4544,25 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
     stringsAsFactors = FALSE
   )
   
-  # Pseudo R² und weitere Statistiken
+  # Pseudo RÂ² und weitere Statistiken
   null_deviance <- model$null.deviance
   residual_deviance <- model$deviance
   pseudo_r2_mcfadden <- 1 - (residual_deviance / null_deviance)
   
-  # Cox & Snell R²
+  # Cox & Snell RÂ²
   pseudo_r2_cox_snell <- 1 - exp((residual_deviance - null_deviance) / n)
   
-  # Nagelkerke R²
+  # Nagelkerke RÂ²
   pseudo_r2_nagelkerke <- pseudo_r2_cox_snell / (1 - exp(-null_deviance / n))
   
-  # Chi²-Test für Modell
+  # ChiÂ²-Test für Modell
   chi2_stat <- null_deviance - residual_deviance
   df <- model$df.null - model$df.residual
   chi2_p_value <- pchisq(chi2_stat, df, lower.tail = FALSE)
   
   model_fit <- data.frame(
-    Kennwert = c("Pseudo R² (McFadden)", "Pseudo R² (Cox & Snell)", "Pseudo R² (Nagelkerke)", 
-                 "AIC", "Chi²-Statistik", "p-Wert (Modell)", "N"),
+    Kennwert = c("Pseudo RÂ² (McFadden)", "Pseudo RÂ² (Cox & Snell)", "Pseudo RÂ² (Nagelkerke)", 
+                 "AIC", "ChiÂ²-Statistik", "p-Wert (Modell)", "N"),
     Wert = c(
       round(pseudo_r2_mcfadden, DIGITS_ROUND),
       round(pseudo_r2_cox_snell, DIGITS_ROUND),
@@ -4874,7 +4876,7 @@ extract_multilevel_results <- function(model, model_type, level_vars, cluster_va
     icc <- between_var / (between_var + within_var)
     
     model_fit <- data.frame(
-      Kennwert = c("AIC", "BIC", "Log-Likelihood", "ICC", "Anzahl Cluster", "Ø Cluster-Größe", "N"),
+      Kennwert = c("AIC", "BIC", "Log-Likelihood", "ICC", "Anzahl Cluster", "ö˜ Cluster-Größe", "N"),
       Wert = c(
         round(AIC(model), 1),
         round(BIC(model), 1),
@@ -4889,7 +4891,7 @@ extract_multilevel_results <- function(model, model_type, level_vars, cluster_va
   } else {
     # Für logistische Modelle
     model_fit <- data.frame(
-      Kennwert = c("AIC", "BIC", "Log-Likelihood", "Anzahl Cluster", "Ø Cluster-Größe", "N"),
+      Kennwert = c("AIC", "BIC", "Log-Likelihood", "Anzahl Cluster", "ö˜ Cluster-Größe", "N"),
       Wert = c(
         round(AIC(model), 1),
         round(BIC(model), 1),
