@@ -5492,7 +5492,7 @@ export_descriptive_statistics <- function(wb, descriptive_results, header_style,
                cols = 1:ncol(result$table_numeric), gridExpand = TRUE)
       current_row <- current_row + nrow(result$table_numeric) + 3
       
-    } else if (result$type %in% c("matrix_ordinal", "matrix_dichotomous") && "table_categorical" %in% names(result)) {
+    } else if (result$type %in% c("matrix_ordinal", "matrix_dichotomous", "matrix_numeric") && "table_categorical" %in% names(result)) {
       # MATRIX ORDINAL - Kategoriale Häufigkeiten + Numerische Kennwerte
       writeData(wb, "Deskriptive_Statistiken", "Kategoriale Häufigkeiten:", startRow = current_row)
       current_row <- current_row + 1
@@ -5516,13 +5516,40 @@ export_descriptive_statistics <- function(wb, descriptive_results, header_style,
       }
       
     } else {
-      # ALLE ANDEREN TYPEN - Standard Tabelle (numeric, nominal_coded, nominal_text, dichotom, matrix)
-      writeData(wb, "Deskriptive_Statistiken", result$table, startRow = current_row, colNames = TRUE)
-      addStyle(wb, "Deskriptive_Statistiken", header_style, rows = current_row, cols = 1:ncol(result$table))
-      addStyle(wb, "Deskriptive_Statistiken", table_style, 
-               rows = (current_row + 1):(current_row + nrow(result$table)), 
-               cols = 1:ncol(result$table), gridExpand = TRUE)
-      current_row <- current_row + nrow(result$table) + 3
+      # ALLE ANDEREN TYPEN - Standard Tabelle (numeric, nominal_coded, nominal_text, dichotom)
+      # Prüfe ob table vorhanden ist
+      if (!is.null(result$table) && nrow(result$table) > 0) {
+        writeData(wb, "Deskriptive_Statistiken", result$table, startRow = current_row, colNames = TRUE)
+        addStyle(wb, "Deskriptive_Statistiken", header_style, rows = current_row, cols = 1:ncol(result$table))
+        addStyle(wb, "Deskriptive_Statistiken", table_style, 
+                 rows = (current_row + 1):(current_row + nrow(result$table)), 
+                 cols = 1:ncol(result$table), gridExpand = TRUE)
+        current_row <- current_row + nrow(result$table) + 3
+      } else {
+        # Fallback: Versuche table_categorical
+        if (!is.null(result$table_categorical) && nrow(result$table_categorical) > 0) {
+          writeData(wb, "Deskriptive_Statistiken", result$table_categorical, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Deskriptive_Statistiken", header_style, rows = current_row, cols = 1:ncol(result$table_categorical))
+          addStyle(wb, "Deskriptive_Statistiken", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(result$table_categorical)), 
+                   cols = 1:ncol(result$table_categorical), gridExpand = TRUE)
+          current_row <- current_row + nrow(result$table_categorical) + 2
+          
+          # Prüfe auch table_numeric
+          if (!is.null(result$table_numeric) && nrow(result$table_numeric) > 0) {
+            writeData(wb, "Deskriptive_Statistiken", result$table_numeric, startRow = current_row, colNames = TRUE)
+            addStyle(wb, "Deskriptive_Statistiken", header_style, rows = current_row, cols = 1:ncol(result$table_numeric))
+            addStyle(wb, "Deskriptive_Statistiken", table_style, 
+                     rows = (current_row + 1):(current_row + nrow(result$table_numeric)), 
+                     cols = 1:ncol(result$table_numeric), gridExpand = TRUE)
+            current_row <- current_row + nrow(result$table_numeric) + 3
+          }
+        } else {
+          cat("WARNUNG: Keine exportierbare Tabelle für Variable", var_name, "(Typ:", result$type, ")\n")
+          writeData(wb, "Deskriptive_Statistiken", paste("WARNUNG: Keine Daten für", var_name), startRow = current_row)
+          current_row <- current_row + 2
+        }
+      }
     }
   }
   
