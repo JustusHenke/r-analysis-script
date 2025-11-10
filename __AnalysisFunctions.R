@@ -2715,7 +2715,7 @@ create_labeled_factor <- function(data, var_name, config) {
     # Erstelle Factor mit Labels
     return(as.factor(labeled_values))
   } else {
-    cat("  ⚠ Keine Labels für", var_name, "- verwende rohe Werte\n")
+    cat("  ⚠  Keine Labels für", var_name, "- verwende rohe Werte\n")
     return(as.factor(original_values))
   }
 }
@@ -4062,12 +4062,12 @@ perform_correlation_test <- function(data, var1, var2, survey_obj = NULL) {
     return(perform_pearson_correlation(complete_data, var1, var2, survey_obj))
   }
   
-  # 2. BEIDE NOMINAL → Cramér's V (basierend auf ChiÃ‚Â²)
+  # 2. BEIDE NOMINAL → Cramér's V (basierend auf Chi²)
   if (!var1_is_numeric && !var2_is_numeric) {
     return(perform_cramers_v(complete_data, var1, var2, survey_obj))
   }
   
-  # 3. EINE NUMERISCH, EINE NOMINAL → EtaÃ‚Â² (Korrelationsverhältnis)
+  # 3. EINE NUMERISCH, EINE NOMIN AL → Eta²(Korrelationsverhältnis)
   if ((var1_is_numeric && !var2_is_numeric) || (!var1_is_numeric && var2_is_numeric)) {
     numeric_var <- if(var1_is_numeric) var1 else var2
     nominal_var <- if(var1_is_numeric) var2 else var1
@@ -4189,7 +4189,7 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
       n <- sum(contingency_table)
     }
     
-    # Cramér's V = sqrt(ChiÃ‚Â² / (n * (min(r,c) - 1)))
+    # Cramér's V = sqrt(Chi²/ (n * (min(r,c) - 1)))
     min_dim <- min(length(unique(data[[var1]])), length(unique(data[[var2]]))) - 1
     cramers_v <- sqrt(chi2_stat / (n * min_dim))
     
@@ -4211,19 +4211,19 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
   })
 }
 
-# 3. EtaÃ‚Â² für numerisch öâ€” nominal
+# 3. Eta²für numerisch öÃ¢â‚¬â€ nominal
 perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NULL) {
   
   tryCatch({
     if (!is.null(survey_obj) && WEIGHTS) {
-      # Gewichtetes EtaÃ‚Â²
+      # Gewichtetes Eta²
       survey_complete <- subset(survey_obj, !is.na(get(numeric_var)) & !is.na(get(nominal_var)))
       
-      # ANOVA für EtaÃ‚Â²
+      # ANOVA für Eta²
       anova_model <- svyglm(as.formula(paste(numeric_var, "~", nominal_var)), survey_complete)
       anova_result <- anova(anova_model)
       
-      # EtaÃ‚Â² = SS_between / SS_total
+      # Eta²= SS_between / SS_total
       ss_between <- anova_result$`Sum Sq`[1]
       ss_total <- sum(anova_result$`Sum Sq`, na.rm = TRUE)
       eta_squared <- ss_between / ss_total
@@ -4231,12 +4231,12 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
       p_value <- anova_result$`Pr(>F)`[1]
       
     } else {
-      # Ungewichtetes EtaÃ‚Â²
+      # Ungewichtetes Eta²
       # ANOVA durchführen
       anova_result <- aov(as.formula(paste(numeric_var, "~", nominal_var)), data = data)
       anova_summary <- summary(anova_result)
       
-      # EtaÃ‚Â² = SS_between / SS_total
+      # Eta²= SS_between / SS_total
       ss_between <- anova_summary[[1]]$`Sum Sq`[1]
       ss_total <- sum(anova_summary[[1]]$`Sum Sq`)
       eta_squared <- ss_between / ss_total
@@ -4245,7 +4245,7 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
     }
     
     return(list(
-      test = "EtaÃ‚Â² (Korrelationsverhältnis)",
+      test = "Eta²(Korrelationsverhältnis)",
       statistic = round(eta_squared, DIGITS_ROUND),
       p_value = round(p_value, 4),
       result = if(p_value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant",
@@ -4254,8 +4254,8 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
     
   }, error = function(e) {
     return(list(
-      test = "EtaÃ‚Â²", 
-      result = paste("Fehler bei EtaÃ‚Â²:", e$message), 
+      test = "Eta²", 
+      result = paste("Fehler bei Eta²:", e$message), 
       p_value = NA, 
       statistic = NA
     ))
@@ -4728,14 +4728,14 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
   # Nagelkerke R²
   pseudo_r2_nagelkerke <- pseudo_r2_cox_snell / (1 - exp(-null_deviance / n))
   
-  # ChiÃ‚Â²-Test für Modell
+  # Chi²-Test für Modell
   chi2_stat <- null_deviance - residual_deviance
   df <- model$df.null - model$df.residual
   chi2_p_value <- pchisq(chi2_stat, df, lower.tail = FALSE)
   
   model_fit <- data.frame(
     Kennwert = c("Pseudo R² (McFadden)", "Pseudo R² (Cox & Snell)", "Pseudo R² (Nagelkerke)", 
-                 "AIC", "ChiÃ‚Â²-Statistik", "p-Wert (Modell)", "N"),
+                 "AIC", "Chi²-Statistik", "p-Wert (Modell)", "N"),
     Wert = c(
       round(pseudo_r2_mcfadden, DIGITS_ROUND),
       round(pseudo_r2_cox_snell, DIGITS_ROUND),
@@ -5267,11 +5267,50 @@ extract_text_responses_simple <- function(data, text_var, sort_var, min_length, 
   if (!is.na(sort_var) && sort_var != "" && sort_var %in% names(data)) {
     text_data$Sort_Kategorie <- as.character(data[[sort_var]])
     
-    # Labels für Sort-Variable falls vorhanden
-    if (!is.null(custom_val_labels) && sort_var %in% names(custom_val_labels)) {
+    # Labels für Sort-Variable mit Priorisierung: RDS -> custom_val_labels -> Code
+    labels <- get_value_labels_with_priority(data, sort_var, NULL)
+    
+    # Falls keine RDS-Labels, versuche custom_val_labels
+    if ((is.null(labels) || length(labels) == 0) && !is.null(custom_val_labels) && sort_var %in% names(custom_val_labels)) {
       labels <- custom_val_labels[[sort_var]]
-      text_data$Sort_Kategorie_Label <- labels[text_data$Sort_Kategorie]
-      text_data$Sort_Kategorie_Label[is.na(text_data$Sort_Kategorie_Label)] <- text_data$Sort_Kategorie[is.na(text_data$Sort_Kategorie_Label)]
+    }
+    
+    if (!is.null(labels) && length(labels) > 0) {
+      text_data$Sort_Kategorie_Label <- NA_character_
+      
+      # Für jeden Code das passende Label finden (wie in create_nominal_coded_table)
+      for (i in seq_len(nrow(text_data))) {
+        code <- as.character(text_data$Sort_Kategorie[i])
+        text_data$Sort_Kategorie_Label[i] <- code  # Default: Verwende Code als Label
+        
+        # Direkte Übereinstimmung: "1" -> "1"
+        if (code %in% names(labels)) {
+          text_data$Sort_Kategorie_Label[i] <- labels[code]
+          next
+        }
+        
+        # Pattern: AO01, AO02, AO03 -> extrahiere Nummer und versuche Match
+        if (grepl("^[A-Z]+0*[0-9]+$", code)) {
+          # Extrahiere Nummer: AO01 -> 1, AO02 -> 2, A001 -> 1
+          num_part <- gsub("^[A-Z]+0*", "", code)
+          
+          # Versuche verschiedene Formate
+          candidates <- c(
+            num_part,                           # "1"
+            paste0("AO", num_part),            # "AO1"
+            paste0("AO0", num_part),           # "AO01"
+            paste0("A", num_part),             # "A1"
+            sprintf("%02d", as.numeric(num_part))  # "01"
+          )
+          
+          for (candidate in candidates) {
+            if (candidate %in% names(labels)) {
+              text_data$Sort_Kategorie_Label[i] <- labels[candidate]
+              break
+            }
+          }
+        }
+      }
     } else {
       text_data$Sort_Kategorie_Label <- text_data$Sort_Kategorie
     }
