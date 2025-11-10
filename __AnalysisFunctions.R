@@ -479,65 +479,166 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
   response_labels <- unique_responses  # Default: Verwende rohe Werte
   names(response_labels) <- unique_responses
   
+  # *** NEUER CODE: LABEL-MAPPING AUS KODIERUNG ERSTELLEN ***
+  response_labels <- unique_responses  # Default: Verwende rohe Werte
+  names(response_labels) <- unique_responses
+  
   # Prüfe ob Kodierung verfügbar ist
-  if (!is.na(var_config$coding) && var_config$coding != "") {
-    labels <- parse_coding(var_config$coding)
-    cat("Kodierung gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
+  # Versuche IMMER Labels zu holen (RDS oder Config)
+  if (TRUE) {  # Geändert: Nicht nur wenn Config-Kodierung vorhanden
+    labels <- NULL
     
-    # ... bestehender Code ...
+    # 1. Versuch: Aus dem ersten Matrix-Item
+    labels <- get_value_labels_with_priority(data, matrix_vars[1], list(variablen = var_config))
+    
+    # 2. Versuch: Direkt aus der Matrix-Variable (falls vorhanden)
+    if ((is.null(labels) || length(labels) == 0) && matrix_name %in% names(data)) {
+      labels <- get_value_labels_with_priority(data, matrix_name, list(variablen = var_config))
+    }
+    
+    # 3. Versuch: Aus Config-Kodierung
+    if (is.null(labels) || length(labels) == 0) {
+      labels <- parse_coding(var_config$coding)
+    }
     
     if (!is.null(labels) && length(labels) > 0) {
+      cat("Labels für Matrix-Responses gefunden:", length(labels), "Labels\n")
+      cat("  Label-Keys:", paste(names(labels), collapse=", "), "\n")
+      
+      
       # Ersetze rohe Werte durch Labels wo verfügbar
+      mapped_count <- 0
       for (response in unique_responses) {
         response_char <- as.character(response)
         
-        # Direkte Übereinstimmung
+        # Debug: Zeige was wir matchen wollen
+        cat("    Versuche zu mappen:", response_char, "\n")
+        
+        mapped <- FALSE
+        
+        # Direkte Übereinstimmung: Response ist direkt in Label-Keys
         if (response_char %in% names(labels)) {
           response_labels[response_char] <- labels[response_char]
-          cat("  Label-Mapping:", response, "→", labels[response_char], "\n")
+          mapped_count <- mapped_count + 1
+          cat("      ✓ Direkt gemappt:", response_char, "->", labels[response_char], "\n")
+          mapped <- TRUE
         }
-        # A-Pattern: A1, A2, A3 -> 1, 2, 3
-        else if (grepl("^A\\d+$", response_char)) {
-          numeric_code <- gsub("^A", "", response_char)
-          if (numeric_code %in% names(labels)) {
-            response_labels[response_char] <- labels[numeric_code]
-            cat("  Label-Mapping:", response, "→", labels[numeric_code], "\n")
-          }
-        }
-        # AO-Pattern: AO01 -> 1
-        else if (grepl("^AO\\d+$", response_char)) {
+        
+        # AO-Pattern: AO01 -> versuche "AO01", "1", "01"
+        if (!mapped && grepl("^AO\\d+$", response_char)) {
+          # Extrahiere Nummer ohne führende Nullen
           numeric_code <- gsub("^AO0*", "", response_char)
-          if (numeric_code %in% names(labels)) {
-            response_labels[response_char] <- labels[numeric_code]
-            cat("  Label-Mapping:", response, "→", labels[numeric_code], "\n")
+          
+          candidates <- c(
+            response_char,  # "AO01"
+            paste0("AO", numeric_code),  # "AO1"
+            numeric_code,   # "1"
+            sprintf("%02d", as.numeric(numeric_code))  # "01"
+          )
+          
+          for (candidate in candidates) {
+            if (candidate %in% names(labels)) {
+              response_labels[response_char] <- labels[candidate]
+              mapped_count <- mapped_count + 1
+              cat("      ✓ AO-Pattern gemappt:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
+              mapped <- TRUE
+              break
+            }
           }
         }
-        # Generisches Pattern
-        else if (grepl("^[A-Z]+\\d+$", response_char)) {
+        
+        # A-Pattern: A1 -> versuche "A1", "1"
+        if (!mapped && grepl("^A\\d+$", response_char)) {
+          numeric_code <- gsub("^A", "", response_char)
+          
+          candidates <- c(
+            response_char,  # "A1"
+            numeric_code    # "1"
+          )
+          
+          for (candidate in candidates) {
+            if (candidate %in% names(labels)) {
+              response_labels[response_char] <- labels[candidate]
+              mapped_count <- mapped_count + 1
+              cat("      ✓ A-Pattern gemappt:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
+              mapped <- TRUE
+              break
+            }
+          }
+        }
+        
+        # Generisches Pattern: Beliebige Buchstaben + Zahlen
+        if (!mapped && grepl("^[A-Z]+\\d+$", response_char)) {
           numeric_code <- gsub("^[A-Z]+0*", "", response_char)
+          
           if (numeric_code %in% names(labels)) {
             response_labels[response_char] <- labels[numeric_code]
-            cat("  Label-Mapping:", response, "→", labels[numeric_code], "\n")
+            mapped_count <- mapped_count + 1
+            cat("      ✓ Generisch gemappt:", response_char, "-> (via", numeric_code, ") ->", labels[numeric_code], "\n")
+            mapped <- TRUE
           }
+        }
+        
+        if (!mapped) {
+          cat("      ✗ Kein Match gefunden für:", response_char, "\n")
         }
       }
+      
+      # Debug: Zeige finale response_labels
+      cat("  Finale Response-Labels:\n")
+      for (resp in unique_responses) {
+        cat("    ", resp, "->", response_labels[as.character(resp)], "\n")
+      }
+      
+      if (mapped_count == 0) {
+        cat("  WARNUNG: Keine Response-Labels gemappt!\n")
+        cat("    Verfügbare Label-Keys:", paste(names(labels), collapse=", "), "\n")
+        cat("    Responses in Daten:", paste(unique_responses, collapse=", "), "\n")
+      } else {
+        cat("  ✓ Erfolgreich gemappt:", mapped_count, "von", length(unique_responses), "Responses\n")
+      }
+    }     } else {
+      cat("Keine Labels für Matrix-Responses gefunden\n")
+    }
+  
+  
+  
+  # Bestimme Matrix-Typ basierend auf Kodierung und Daten
+  has_coding <- !is.na(var_config$coding) && var_config$coding != ""
+  is_dichotomous_matrix <- FALSE
+  is_ordinal_matrix <- FALSE
+  is_numeric_matrix <- FALSE
+  
+  # Prüfe ob dichotome Matrix (nur "1" oder leer in Daten)
+  if (all(unique_responses %in% c("", "1")) || all(unique_responses %in% c("1"))) {
+    is_dichotomous_matrix <- TRUE
+    cat("Dichotome Matrix erkannt (nur '1' Werte)\n")
+  }
+  
+  # Prüfe ob ordinale Matrix (Kodierung vorhanden und nicht dichotom)
+  if (has_coding && !is_dichotomous_matrix) {
+    is_ordinal_matrix <- TRUE
+    cat("Ordinale Matrix erkannt (Kodierung vorhanden)\n")
+  }
+  
+  # Prüfe ob numerische Matrix (keine Kodierung, numerische Werte)
+  if (!has_coding && !is_dichotomous_matrix) {
+    test_numeric <- suppressWarnings(as.numeric(unique_responses))
+    if (all(!is.na(test_numeric))) {
+      is_numeric_matrix <- TRUE
+      cat("Numerische Matrix erkannt (numerische Werte ohne Kodierung)\n")
     }
   }
   
-  # Prüfe ob es sich um dichotome Matrix handelt (Y/N Pattern)
-  is_dichotomous_matrix <- FALSE
-  labels <- NULL
-  
-  # NEUE LOGIK: Erkenne dichotome Matrix auch ohne Kodierung
-  # Pattern: Nur "1" und leere Werte in Daten (typisch für Checkboxen)
-  if (all(unique_responses %in% c("", "1")) || all(unique_responses %in% c("1"))) {
-    is_dichotomous_matrix <- TRUE
-    cat("Dichotome Matrix erkannt (1/leer Pattern in Daten, ohne Kodierung)\n")
-  }
+  # Numerische Statistiken
   
   # Prüfe ob Kodierung verfügbar ist
   if (!is.na(var_config$coding) && var_config$coding != "") {
-    labels <- parse_coding(var_config$coding)
+    # Versuche zuerst RDS-Labels, dann Config
+    labels <- get_value_labels_with_priority(data, matrix_vars[1], list(variablen = var_config))
+    if (is.null(labels) || length(labels) == 0) {
+      labels <- parse_coding(var_config$coding)
+    }
     cat("Kodierung gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
     
     # Erkenne dichotome Matrix (Y/N, 1/0, etc.)
@@ -2026,16 +2127,14 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
     data_filtered <- data
   }
   
-  # Kodierung parsen
-  labels <- parse_coding(coding)
+  # Labels mit Priorisierung laden: RDS -> Config -> Code
+  labels <- get_value_labels_with_priority(data, var_name, 
+                                           list(variablen = data.frame(
+                                             variable_name = var_name,
+                                             coding = coding,
+                                             stringsAsFactors = FALSE
+                                           )))
   
-  # NEU: Falls keine Kodierung in Config, versuche Labels aus Daten zu extrahieren
-  if (is.null(labels) || length(labels) == 0) {
-    if (requireNamespace("labelled", quietly = TRUE) && labelled::is.labelled(data[[var_name]])) {
-      labels <- labelled::val_labels(data[[var_name]])
-      cat("  Labels aus Daten extrahiert für", var_name, "\n")
-    }
-  }
   
   # Häufigkeiten berechnen
   if (!is.null(survey_obj) && WEIGHTS) {
@@ -2069,39 +2168,41 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
   if (!is.null(labels) && length(labels) > 0) {
     freq_df$Label <- NA_character_
     
+    # Debug: Zeige welche Labels wir haben
+    cat("  Mapping Labels für", nrow(freq_df), "Codes\n")
+    cat("  Verfügbare Label-Keys:", paste(names(labels), collapse=", "), "\n")
+    
     for (i in seq_len(nrow(freq_df))) {
       code <- as.character(freq_df$Code[i])
+      freq_df$Label[i] <- code  # Default: Verwende Code als Label
       
-      # Direkte Übereinstimmung
+      # Direkte Übereinstimmung: "1" -> "1"
       if (code %in% names(labels)) {
         freq_df$Label[i] <- labels[code]
-      } 
-      # AO-Pattern: AO01 -> 1
-      else if (grepl("^AO\\d+$", code)) {
-        numeric_code <- gsub("^AO0*", "", code)
-        if (numeric_code %in% names(labels)) {
-          freq_df$Label[i] <- labels[numeric_code]
-        }
-      }
-      # A-Pattern: A1, A2, A3 -> 1, 2, 3
-      else if (grepl("^A\\d+$", code)) {
-        numeric_code <- gsub("^A", "", code)
-        if (numeric_code %in% names(labels)) {
-          freq_df$Label[i] <- labels[numeric_code]
-        }
-      }
-      # Generisches Pattern: Buchstaben + Zahl -> Zahl
-      else if (grepl("^[A-Z]+\\d+$", code)) {
-        numeric_code <- gsub("^[A-Z]+", "", code)
-        numeric_code <- gsub("^0+", "", numeric_code)  # Führende Nullen entfernen
-        if (numeric_code %in% names(labels)) {
-          freq_df$Label[i] <- labels[numeric_code]
-        }
+        next
       }
       
-      # Fallback: Verwende Code
-      if (is.na(freq_df$Label[i])) {
-        freq_df$Label[i] <- code
+      # Pattern: AO01, AO02, AO03 -> extrahiere Nummer und versuche Match
+      if (grepl("^[A-Z]+0*[0-9]+$", code)) {
+        # Extrahiere Nummer: AO01 -> 1, AO02 -> 2, A001 -> 1
+        num_part <- gsub("^[A-Z]+0*", "", code)
+        
+        # Versuche verschiedene Formate
+        candidates <- c(
+          num_part,                           # "1"
+          paste0("AO", num_part),            # "AO1"
+          paste0("AO0", num_part),           # "AO01"
+          paste0("A", num_part),             # "A1"
+          sprintf("%02d", as.numeric(num_part))  # "01"
+        )
+        
+        for (candidate in candidates) {
+          if (candidate %in% names(labels)) {
+            freq_df$Label[i] <- labels[candidate]
+            cat("    Mapped:", code, "->", candidate, "->", labels[candidate], "\n")
+            break
+          }
+        }
       }
     }
     
@@ -2151,41 +2252,10 @@ create_nominal_text_table <- function(data, var_name, question_text, use_na, cat
     )
   }
   
-  # *** NEUE LOGIC: Labels anwenden (Config + Datensatz-Fallback) ***
-  labels_found <- FALSE
-  labels <- NULL
+  # *** NEUE LOGIC: Labels anwenden (RDS -> Config -> Code) ***
+  labels <- get_value_labels_with_priority(data, var_name, config)
+  labels_found <- !is.null(labels) && length(labels) > 0
   
-  # PRIORITÄT 1: Labels aus Config-Kodierung
-  if (!is.null(config)) {
-    var_config <- config$variablen[config$variablen$variable_name == var_name, ]
-    
-    if (nrow(var_config) > 0 && !is.na(var_config$coding[1]) && var_config$coding[1] != "") {
-      labels <- parse_coding(var_config$coding[1])
-      if (!is.null(labels) && length(labels) > 0) {
-        labels_found <- TRUE
-      }
-    }
-  }
-  
-  # PRIORITÄT 2: Labels aus Daten-Attributen (Fallback)
-  if (!labels_found) {
-    labels_attr <- attr(data[[var_name]], "labels")
-    if (!is.null(labels_attr) && length(labels_attr) > 0) {
-      labels <- labels_attr
-      labels_found <- TRUE
-    }
-  }
-  
-  # PRIORITÄT 3: Labelled-Package Labels (Fallback)
-  if (!labels_found && requireNamespace("labelled", quietly = TRUE)) {
-    if (labelled::is.labelled(data[[var_name]])) {
-      val_labels <- labelled::val_labels(data[[var_name]])
-      if (!is.null(val_labels) && length(val_labels) > 0) {
-        labels <- val_labels
-        labels_found <- TRUE
-      }
-    }
-  }
   
   # Labels anwenden falls gefunden
   if (labels_found && !is.null(labels)) {
@@ -2282,6 +2352,121 @@ create_dichotom_table <- function(data, var_config, use_na, survey_obj = NULL) {
 
 
 
+
+
+# =============================================================================
+# ZENTRALE LABEL-EXTRAKTION MIT PRIORISIERUNG
+# =============================================================================
+
+get_value_labels_with_priority <- function(data, var_name, config = NULL) {
+  "Extrahiert Value Labels mit Priorisierung: 1) RDS-Labels 2) Config-Labels 3) Code als Label"
+  
+  labels <- NULL
+  
+  # PRIORITÄT 1: Labels aus RDS-Daten
+  if (var_name %in% names(data)) {
+    # 1a. Attribut "labels" (häufigste Form)
+    if (!is.null(attr(data[[var_name]], "labels"))) {
+      labels_raw <- attr(data[[var_name]], "labels")
+      
+      # WICHTIG: Labels können umgekehrt sein! 
+      # Check: Sind die Namen (names) die Texte und die Werte die Codes?
+      # Beispiel: c("Universität" = "A1") statt c("A1" = "Universität")
+      
+      if (length(labels_raw) > 0) {
+        # Prüfe ob Werte wie Codes aussehen und Namen wie Texte
+        values <- as.character(labels_raw)
+        names_vals <- names(labels_raw)
+        
+        # Wenn Werte kurz sind (codes) und Namen lang (labels), dann umkehren
+        avg_value_len <- mean(nchar(values))
+        avg_name_len <- mean(nchar(names_vals))
+        
+        if (avg_value_len < avg_name_len && avg_value_len <= 10) {
+          # Umkehren: names werden zu values, values werden zu names
+          labels <- setNames(names_vals, values)
+          cat("  -> Labels aus RDS-Attribut 'labels' gefunden (umgekehrt) für", var_name, "
+")
+        } else {
+          # Normal: verwende wie sie sind
+          labels <- labels_raw
+          cat("  -> Labels aus RDS-Attribut 'labels' gefunden für", var_name, "
+")
+        }
+      }
+    }
+    
+    # 1b. Haven/Labelled Package
+    if ((is.null(labels) || length(labels) == 0) && requireNamespace("labelled", quietly = TRUE)) {
+      if (labelled::is.labelled(data[[var_name]])) {
+        labels_raw <- labelled::val_labels(data[[var_name]])
+        
+        if (!is.null(labels_raw) && length(labels_raw) > 0) {
+          # Gleiche Logik: Prüfe ob umgekehrt
+          values <- as.character(labels_raw)
+          names_vals <- names(labels_raw)
+          avg_value_len <- mean(nchar(values))
+          avg_name_len <- mean(nchar(names_vals))
+          
+          if (avg_value_len < avg_name_len && avg_value_len <= 10) {
+            labels <- setNames(names_vals, values)
+            cat("  -> Labels aus RDS (labelled package, umgekehrt) für", var_name, "
+")
+          } else {
+            labels <- labels_raw
+            cat("  -> Labels aus RDS (labelled package) für", var_name, "
+")
+          }
+        }
+      }
+    }
+    
+    # 1c. Direkte value.labels Attribut-Prüfung
+    if ((is.null(labels) || length(labels) == 0) && !is.null(attr(data[[var_name]], "value.labels"))) {
+      labels_raw <- attr(data[[var_name]], "value.labels")
+      
+      if (length(labels_raw) > 0) {
+        values <- as.character(labels_raw)
+        names_vals <- names(labels_raw)
+        avg_value_len <- mean(nchar(values))
+        avg_name_len <- mean(nchar(names_vals))
+        
+        if (avg_value_len < avg_name_len && avg_value_len <= 10) {
+          labels <- setNames(names_vals, values)
+          cat("  -> Labels aus RDS-Attribut 'value.labels' (umgekehrt) für", var_name, "
+")
+        } else {
+          labels <- labels_raw
+          cat("  -> Labels aus RDS-Attribut 'value.labels' für", var_name, "
+")
+        }
+      }
+    }
+  }
+  
+  # PRIORITÄT 2: Labels aus Config-Kodierung (nur wenn keine RDS-Labels gefunden)
+  if (is.null(labels) || length(labels) == 0) {
+    if (!is.null(config)) {
+      var_config <- config$variablen[config$variablen$variable_name == var_name, ]
+      
+      if (nrow(var_config) > 0 && !is.na(var_config$coding[1]) && var_config$coding[1] != "") {
+        labels <- parse_coding(var_config$coding[1])
+        if (!is.null(labels) && length(labels) > 0) {
+          cat("  -> Labels aus Config-Kodierung gefunden für", var_name, "
+")
+        }
+      }
+    }
+  }
+  
+  # Debug: Falls Labels gefunden, zeige sie an
+  if (!is.null(labels) && length(labels) > 0) {
+    cat("    Gefundene Labels:", paste(names(labels), "=", labels, collapse="; "), "
+")
+  }
+  
+  return(labels)
+}
 
 
 # =============================================================================
@@ -2472,127 +2657,67 @@ detect_actual_data_type <- function(data, var_name) {
 
 # Erweiterte create_labeled_factor Funktion mit umfassender Label-Suche
 create_labeled_factor <- function(data, var_name, config) {
-  "Erstellt einen Factor mit Labels aus verschiedenen Quellen und behandelt AO-Pattern"
+  "Erstellt einen Factor mit Labels aus verschiedenen Quellen (inkl. RDS mit Umkehr)"
   
   # NEUER FIX: Überspringe numerische Variablen
   if (is.numeric(data[[var_name]])) {
     return(data[[var_name]])  # Gib numerische Variable unverändert zurück
   }
   
-  
   # Originale Werte
   original_values <- data[[var_name]]
   
-  labels_found <- FALSE
-  labels <- NULL
-  
-  # PRIORITÄT 1: Labels aus Config-Kodierung
-  if (!is.null(config)) {
-    var_config <- config$variablen[config$variablen$variable_name == var_name, ]
-    
-    if (nrow(var_config) > 0 && !is.na(var_config$coding[1]) && var_config$coding[1] != "") {
-      labels <- parse_coding(var_config$coding[1])
-      if (!is.null(labels) && length(labels) > 0) {
-        labels_found <- TRUE
-        cat("  ✓ Labels aus Config gefunden:", paste(names(labels), "=", labels, collapse = "; "), "\n")
-      }
-    }
-  }
-  
-  # PRIORITÄT 2: Labels aus Daten-Attributen (Fallback)
-  if (!labels_found) {
-    labels_attr <- attr(data[[var_name]], "labels")
-    if (!is.null(labels_attr) && length(labels_attr) > 0) {
-      labels <- labels_attr
-      labels_found <- TRUE
-      # cat("  ✓ Labels aus Daten-Attributen gefunden:", paste(names(labels), "=", labels, collapse = "; "), "\n")
-    }
-  }
-  
-  # PRIORITÄT 3: Labelled-Package Labels (Fallback)
-  if (!labels_found && requireNamespace("labelled", quietly = TRUE)) {
-    if (labelled::is.labelled(data[[var_name]])) {
-      val_labels <- labelled::val_labels(data[[var_name]])
-      if (!is.null(val_labels) && length(val_labels) > 0) {
-        labels <- val_labels
-        labels_found <- TRUE
-        # cat("  ✓ Labels aus Labelled-Package gefunden:", paste(names(labels), "=", labels, collapse = "; "), "\n")
-      }
-    }
-  }
+  # NEUE PRIORISIERUNG: Nutze get_value_labels_with_priority
+  labels <- get_value_labels_with_priority(data, var_name, config)
+  labels_found <- !is.null(labels) && length(labels) > 0
   
   # Labels anwenden falls gefunden
-  if (labels_found && !is.null(labels)) {
-    # *** NEU: AO-PATTERN BEHANDLUNG ***
-    labeled_values <- original_values
+  if (labels_found) {
+    cat("  ✓ Labels gefunden für", var_name, ":", length(labels), "Labels\n")
     
-    for (i in seq_along(labels)) {
-      code <- names(labels)[i]
-      label <- labels[i]
+    # Erstelle gelabelte Werte
+    labeled_values <- as.character(original_values)
+    mapped_count <- 0
+    
+    for (code in names(labels)) {
+      label <- labels[code]
       
-      # Normale Code-zu-Label Zuordnung
-      before_count <- sum(labeled_values == code, na.rm = TRUE)
-      labeled_values[original_values == code] <- label
+      # Direkte Übereinstimmung
+      matches <- labeled_values == code
+      if (any(matches, na.rm = TRUE)) {
+        labeled_values[matches & !is.na(matches)] <- label
+        mapped_count <- mapped_count + sum(matches, na.rm = TRUE)
+      }
       
-      # *** NEU: AO-Pattern Behandlung ***
-      # Wenn Code wie "AO01" ist, suche auch nach reinen Zahlen
+      # AO-Pattern: AO01 -> auch "1" mappen
       if (grepl("^AO\\d+$", code)) {
-        # Extrahiere Nummer: AO01 -> 1
-        numeric_code <- as.numeric(gsub("^AO0*", "", code))
-        if (!is.na(numeric_code)) {
-          # Ersetze auch reine Zahlen (1, 2, 3) mit Labels
-          numeric_matches <- sum(labeled_values == numeric_code, na.rm = TRUE)
-          labeled_values[original_values == numeric_code] <- label
-          before_count <- before_count + numeric_matches
-          # cat("    AO-Pattern Mapping:", code, "/", numeric_code, "→", label, "(", before_count, "Fälle)", "\n")
+        numeric_code <- as.character(as.numeric(gsub("^AO0*", "", code)))
+        matches_num <- labeled_values == numeric_code
+        if (any(matches_num, na.rm = TRUE)) {
+          labeled_values[matches_num & !is.na(matches_num)] <- label
+          mapped_count <- mapped_count + sum(matches_num, na.rm = TRUE)
         }
-      } else {
-        # cat("    Normal Mapping:", code, "→", label, "(", before_count, "Fälle)", "\n")
       }
-    }
-    
-    # cat("  Gelabelte Werte (eindeutig):", paste(unique(labeled_values), collapse = ", "), "\n")
-    
-    # Erstelle Factor mit Labels als Levels
-    present_codes <- unique(original_values[!is.na(original_values)])
-    present_labels <- c()
-    
-    for (code in present_codes) {
-      code_str <- as.character(code)
-      if (code_str %in% names(labels)) {
-        present_labels <- c(present_labels, labels[code_str])
-      } else {
-        # *** NEU: AO-Pattern Rückwärts-Lookup ***
-        # Suche nach AO-Code für numerischen Wert
-        found_ao_label <- FALSE
-        for (label_code in names(labels)) {
-          if (grepl("^AO\\d+$", label_code)) {
-            numeric_from_ao <- as.numeric(gsub("^AO0*", "", label_code))
-            if (!is.na(numeric_from_ao) && numeric_from_ao == code) {
-              present_labels <- c(present_labels, labels[label_code])
-              found_ao_label <- TRUE
-              break
-            }
-          }
-        }
-        if (!found_ao_label) {
-          present_labels <- c(present_labels, code_str)  # Fallback
+      
+      # A-Pattern: A1 -> auch "1" mappen
+      if (grepl("^A\\d+$", code)) {
+        numeric_code <- gsub("^A", "", code)
+        matches_num <- labeled_values == numeric_code
+        if (any(matches_num, na.rm = TRUE)) {
+          labeled_values[matches_num & !is.na(matches_num)] <- label
+          mapped_count <- mapped_count + sum(matches_num, na.rm = TRUE)
         }
       }
     }
     
-    # cat("  Codes in Daten:", paste(present_codes, collapse = ", "), "\n")
-    # cat("  Entsprechende Labels:", paste(present_labels, collapse = ", "), "\n")
+    cat("    Gemappt:", mapped_count, "Werte\n")
     
-    result_factor <- factor(labeled_values, levels = present_labels)
-    # cat("  Factor-Levels des Ergebnisses:", paste(levels(result_factor), collapse = ", "), "\n")
-    
-    return(result_factor)
+    # Erstelle Factor mit Labels
+    return(as.factor(labeled_values))
+  } else {
+    cat("  ⚠ Keine Labels für", var_name, "- verwende rohe Werte\n")
+    return(as.factor(original_values))
   }
-  
-  # FALLBACK: Keine Labels gefunden
-  cat("  WARNUNG: Keine Labels gefunden, verwende ursprüngliche Werte\n")
-  return(as.factor(original_values))
 }
 
 
@@ -2771,7 +2896,7 @@ create_matrix_crosstab <- function(data, matrix_var, group_var, survey_obj = NUL
     # *** VERBESSERTE ORDINAL-ERKENNUNG ***
     
     # Prüfe ob Werte das Format "Zahl (Text)" haben (ordinal)
-    ordinal_pattern <- "^\\d+\\s*\\("
+    ordinal_pattern <- "^\\d+(\\s*\\(.*\\))?$"
     ordinal_matches <- str_detect(unique_responses, ordinal_pattern)
     
     # Entferne "Weiß nicht" und ähnliche aus der Ordinal-Prüfung
@@ -2850,12 +2975,60 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
   response_labels <- unique_responses
   names(response_labels) <- unique_responses
   
-  if (!is.na(matrix_coding) && matrix_coding != "") {
-    labels <- parse_coding(matrix_coding)
-    if (!is.null(labels)) {
+  # Versuche IMMER Labels zu holen (auch ohne Config-Kodierung)
+  if (TRUE) {  # Geändert: Nicht nur wenn Config-Kodierung vorhanden
+    # Versuche von erstem Matrix-Item
+    labels <- NULL
+    if (length(matrix_vars) > 0) {
+      # Erstelle temporäre config für get_value_labels_with_priority
+      temp_config <- list(variablen = data.frame(
+        variable_name = matrix_vars[1],
+        coding = matrix_coding,
+        stringsAsFactors = FALSE
+      ))
+      labels <- get_value_labels_with_priority(data, matrix_vars[1], temp_config)
+    }
+    
+    # Fallback auf parse_coding
+    if (is.null(labels) || length(labels) == 0) {
+      labels <- parse_coding(matrix_coding)
+    }
+    
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("  Labels für Matrix-Kreuztabelle gefunden:", length(labels), "Labels\n")
+      cat("    Label-Keys:", paste(names(labels), collapse=", "), "\n")
+      
+      # Mappe Response-Labels mit intelligenter Pattern-Erkennung
       for (response in unique_responses) {
-        if (as.character(response) %in% names(labels)) {
-          response_labels[as.character(response)] <- labels[as.character(response)]
+        response_char <- as.character(response)
+        mapped <- FALSE
+        
+        # Direkt
+        if (response_char %in% names(labels)) {
+          response_labels[response_char] <- labels[response_char]
+          mapped <- TRUE
+        }
+        
+        # AO-Pattern
+        if (!mapped && grepl("^AO\\d+$", response_char)) {
+          numeric_code <- gsub("^AO0*", "", response_char)
+          if (numeric_code %in% names(labels)) {
+            response_labels[response_char] <- labels[numeric_code]
+            mapped <- TRUE
+          }
+        }
+        
+        # A-Pattern
+        if (!mapped && grepl("^A\\d+$", response_char)) {
+          numeric_code <- gsub("^A", "", response_char)
+          if (numeric_code %in% names(labels)) {
+            response_labels[response_char] <- labels[numeric_code]
+            mapped <- TRUE
+          }
+        }
+        
+        if (mapped) {
+          cat("      Mapped:", response_char, "->", response_labels[response_char], "\n")
         }
       }
     }
@@ -3889,12 +4062,12 @@ perform_correlation_test <- function(data, var1, var2, survey_obj = NULL) {
     return(perform_pearson_correlation(complete_data, var1, var2, survey_obj))
   }
   
-  # 2. BEIDE NOMINAL → Cramér's V (basierend auf ChiÂ²)
+  # 2. BEIDE NOMINAL → Cramér's V (basierend auf ChiÃ‚Â²)
   if (!var1_is_numeric && !var2_is_numeric) {
     return(perform_cramers_v(complete_data, var1, var2, survey_obj))
   }
   
-  # 3. EINE NUMERISCH, EINE NOMINAL → EtaÂ² (Korrelationsverhältnis)
+  # 3. EINE NUMERISCH, EINE NOMINAL → EtaÃ‚Â² (Korrelationsverhältnis)
   if ((var1_is_numeric && !var2_is_numeric) || (!var1_is_numeric && var2_is_numeric)) {
     numeric_var <- if(var1_is_numeric) var1 else var2
     nominal_var <- if(var1_is_numeric) var2 else var1
@@ -4016,7 +4189,7 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
       n <- sum(contingency_table)
     }
     
-    # Cramér's V = sqrt(ChiÂ² / (n * (min(r,c) - 1)))
+    # Cramér's V = sqrt(ChiÃ‚Â² / (n * (min(r,c) - 1)))
     min_dim <- min(length(unique(data[[var1]])), length(unique(data[[var2]]))) - 1
     cramers_v <- sqrt(chi2_stat / (n * min_dim))
     
@@ -4038,19 +4211,19 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
   })
 }
 
-# 3. EtaÂ² für numerisch ö— nominal
+# 3. EtaÃ‚Â² für numerisch öâ€” nominal
 perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NULL) {
   
   tryCatch({
     if (!is.null(survey_obj) && WEIGHTS) {
-      # Gewichtetes EtaÂ²
+      # Gewichtetes EtaÃ‚Â²
       survey_complete <- subset(survey_obj, !is.na(get(numeric_var)) & !is.na(get(nominal_var)))
       
-      # ANOVA für EtaÂ²
+      # ANOVA für EtaÃ‚Â²
       anova_model <- svyglm(as.formula(paste(numeric_var, "~", nominal_var)), survey_complete)
       anova_result <- anova(anova_model)
       
-      # EtaÂ² = SS_between / SS_total
+      # EtaÃ‚Â² = SS_between / SS_total
       ss_between <- anova_result$`Sum Sq`[1]
       ss_total <- sum(anova_result$`Sum Sq`, na.rm = TRUE)
       eta_squared <- ss_between / ss_total
@@ -4058,12 +4231,12 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
       p_value <- anova_result$`Pr(>F)`[1]
       
     } else {
-      # Ungewichtetes EtaÂ²
+      # Ungewichtetes EtaÃ‚Â²
       # ANOVA durchführen
       anova_result <- aov(as.formula(paste(numeric_var, "~", nominal_var)), data = data)
       anova_summary <- summary(anova_result)
       
-      # EtaÂ² = SS_between / SS_total
+      # EtaÃ‚Â² = SS_between / SS_total
       ss_between <- anova_summary[[1]]$`Sum Sq`[1]
       ss_total <- sum(anova_summary[[1]]$`Sum Sq`)
       eta_squared <- ss_between / ss_total
@@ -4072,7 +4245,7 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
     }
     
     return(list(
-      test = "EtaÂ² (Korrelationsverhältnis)",
+      test = "EtaÃ‚Â² (Korrelationsverhältnis)",
       statistic = round(eta_squared, DIGITS_ROUND),
       p_value = round(p_value, 4),
       result = if(p_value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant",
@@ -4081,8 +4254,8 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
     
   }, error = function(e) {
     return(list(
-      test = "EtaÂ²", 
-      result = paste("Fehler bei EtaÂ²:", e$message), 
+      test = "EtaÃ‚Â²", 
+      result = paste("Fehler bei EtaÃ‚Â²:", e$message), 
       p_value = NA, 
       statistic = NA
     ))
@@ -4437,7 +4610,7 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
     fitted_values <- fitted(model)
     observed_values <- survey_complete$variables[, all.vars(formula_obj)[1]]
     
-    # Bessere RÂ² Berechnung für gewichtete Regression
+    # Bessere R² Berechnung für gewichtete Regression
     ss_res <- sum((observed_values - fitted_values)^2)
     ss_tot <- sum((observed_values - mean(observed_values))^2)
     r_squared <- 1 - (ss_res / ss_tot)
@@ -4450,10 +4623,10 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
     
     # Modell-Güte für gewichtete Regression
     model_fit <- data.frame(
-      Kennwert = c("RÂ²", "Adjustiertes RÂ²", "F-Statistik", "p-Wert (Modell)", "N"),
+      Kennwert = c("R²", "Adjustiertes R²", "F-Statistik", "p-Wert (Modell)", "N"),
       Wert = c(
         round(r_squared, DIGITS_ROUND),
-        round(1 - (1 - r_squared) * (n - 1) / (n - p - 1), DIGITS_ROUND),  # Adj. RÂ²
+        round(1 - (1 - r_squared) * (n - 1) / (n - p - 1), DIGITS_ROUND),  # Adj. R²
         round(f_stat, DIGITS_ROUND),
         round(f_p_value, 4),
         n
@@ -4479,7 +4652,7 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
     
     # Modell-Güte für ungewichtete Regression
     model_fit <- data.frame(
-      Kennwert = c("RÂ²", "Adjustiertes RÂ²", "F-Statistik", "p-Wert (Modell)", "N"),
+      Kennwert = c("R²", "Adjustiertes R²", "F-Statistik", "p-Wert (Modell)", "N"),
       Wert = c(
         round(r_squared, DIGITS_ROUND),
         round(model_summary$adj.r.squared, DIGITS_ROUND),
@@ -4544,25 +4717,25 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
     stringsAsFactors = FALSE
   )
   
-  # Pseudo RÂ² und weitere Statistiken
+  # Pseudo R² und weitere Statistiken
   null_deviance <- model$null.deviance
   residual_deviance <- model$deviance
   pseudo_r2_mcfadden <- 1 - (residual_deviance / null_deviance)
   
-  # Cox & Snell RÂ²
+  # Cox & Snell R²
   pseudo_r2_cox_snell <- 1 - exp((residual_deviance - null_deviance) / n)
   
-  # Nagelkerke RÂ²
+  # Nagelkerke R²
   pseudo_r2_nagelkerke <- pseudo_r2_cox_snell / (1 - exp(-null_deviance / n))
   
-  # ChiÂ²-Test für Modell
+  # ChiÃ‚Â²-Test für Modell
   chi2_stat <- null_deviance - residual_deviance
   df <- model$df.null - model$df.residual
   chi2_p_value <- pchisq(chi2_stat, df, lower.tail = FALSE)
   
   model_fit <- data.frame(
-    Kennwert = c("Pseudo RÂ² (McFadden)", "Pseudo RÂ² (Cox & Snell)", "Pseudo RÂ² (Nagelkerke)", 
-                 "AIC", "ChiÂ²-Statistik", "p-Wert (Modell)", "N"),
+    Kennwert = c("Pseudo R² (McFadden)", "Pseudo R² (Cox & Snell)", "Pseudo R² (Nagelkerke)", 
+                 "AIC", "ChiÃ‚Â²-Statistik", "p-Wert (Modell)", "N"),
     Wert = c(
       round(pseudo_r2_mcfadden, DIGITS_ROUND),
       round(pseudo_r2_cox_snell, DIGITS_ROUND),
@@ -4876,7 +5049,7 @@ extract_multilevel_results <- function(model, model_type, level_vars, cluster_va
     icc <- between_var / (between_var + within_var)
     
     model_fit <- data.frame(
-      Kennwert = c("AIC", "BIC", "Log-Likelihood", "ICC", "Anzahl Cluster", "ö˜ Cluster-Größe", "N"),
+      Kennwert = c("AIC", "BIC", "Log-Likelihood", "ICC", "Anzahl Cluster", "mittlere Cluster-Größe", "N"),
       Wert = c(
         round(AIC(model), 1),
         round(BIC(model), 1),
@@ -4891,7 +5064,7 @@ extract_multilevel_results <- function(model, model_type, level_vars, cluster_va
   } else {
     # Für logistische Modelle
     model_fit <- data.frame(
-      Kennwert = c("AIC", "BIC", "Log-Likelihood", "Anzahl Cluster", "ö˜ Cluster-Größe", "N"),
+      Kennwert = c("AIC", "BIC", "Log-Likelihood", "Anzahl Cluster", "mittlere Cluster-Größe", "N"),
       Wert = c(
         round(AIC(model), 1),
         round(BIC(model), 1),
