@@ -475,131 +475,18 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
   
   cat("Gefundene Antwortkategorien:", paste(unique_responses, collapse = ", "), "\n")
   
-  # *** NEUER CODE: LABEL-MAPPING AUS KODIERUNG ERSTELLEN ***
-  response_labels <- unique_responses  # Default: Verwende rohe Werte
-  names(response_labels) <- unique_responses
+  # *** VEREINFACHTE LABEL-EXTRAKTION MIT NEUER HILFSFUNKTION ***
+  # Hole Labels mit zentraler Funktion (eliminiert Redundanz)
+  labels <- get_matrix_labels(data, matrix_vars, matrix_name, var_config, var_config$coding)
   
-  # *** NEUER CODE: LABEL-MAPPING AUS KODIERUNG ERSTELLEN ***
-  response_labels <- unique_responses  # Default: Verwende rohe Werte
-  names(response_labels) <- unique_responses
+  if (!is.null(labels) && length(labels) > 0) {
+    cat("Labels für Matrix-Responses gefunden:", length(labels), "Labels\n")
+  } else {
+    cat("Keine Labels für Matrix-Responses gefunden\n")
+  }
   
-  # Prüfe ob Kodierung verfügbar ist
-  # Versuche IMMER Labels zu holen (RDS oder Config)
-  if (TRUE) {  # Geändert: Nicht nur wenn Config-Kodierung vorhanden
-    labels <- NULL
-    
-    # 1. Versuch: Aus dem ersten Matrix-Item
-    labels <- get_value_labels_with_priority(data, matrix_vars[1], list(variablen = var_config))
-    
-    # 2. Versuch: Direkt aus der Matrix-Variable (falls vorhanden)
-    if ((is.null(labels) || length(labels) == 0) && matrix_name %in% names(data)) {
-      labels <- get_value_labels_with_priority(data, matrix_name, list(variablen = var_config))
-    }
-    
-    # 3. Versuch: Aus Config-Kodierung
-    if (is.null(labels) || length(labels) == 0) {
-      labels <- parse_coding(var_config$coding)
-    }
-    
-    if (!is.null(labels) && length(labels) > 0) {
-      cat("Labels für Matrix-Responses gefunden:", length(labels), "Labels\n")
-      cat("  Label-Keys:", paste(names(labels), collapse=", "), "\n")
-      
-      
-      # Ersetze rohe Werte durch Labels wo verfügbar
-      mapped_count <- 0
-      for (response in unique_responses) {
-        response_char <- as.character(response)
-        
-        # Debug: Zeige was wir matchen wollen
-        cat("    Versuche zu mappen:", response_char, "\n")
-        
-        mapped <- FALSE
-        
-        # Direkte Übereinstimmung: Response ist direkt in Label-Keys
-        if (response_char %in% names(labels)) {
-          response_labels[response_char] <- labels[response_char]
-          mapped_count <- mapped_count + 1
-          cat("      ✓ Direkt gemappt:", response_char, "->", labels[response_char], "\n")
-          mapped <- TRUE
-        }
-        
-        # AO-Pattern: AO01 -> versuche "AO01", "1", "01"
-        if (!mapped && grepl("^AO\\d+$", response_char)) {
-          # Extrahiere Nummer ohne führende Nullen
-          numeric_code <- gsub("^AO0*", "", response_char)
-          
-          candidates <- c(
-            response_char,  # "AO01"
-            paste0("AO", numeric_code),  # "AO1"
-            numeric_code,   # "1"
-            sprintf("%02d", as.numeric(numeric_code))  # "01"
-          )
-          
-          for (candidate in candidates) {
-            if (candidate %in% names(labels)) {
-              response_labels[response_char] <- labels[candidate]
-              mapped_count <- mapped_count + 1
-              cat("      ✓ AO-Pattern gemappt:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
-              mapped <- TRUE
-              break
-            }
-          }
-        }
-        
-        # A-Pattern: A1 -> versuche "A1", "1"
-        if (!mapped && grepl("^A\\d+$", response_char)) {
-          numeric_code <- gsub("^A", "", response_char)
-          
-          candidates <- c(
-            response_char,  # "A1"
-            numeric_code    # "1"
-          )
-          
-          for (candidate in candidates) {
-            if (candidate %in% names(labels)) {
-              response_labels[response_char] <- labels[candidate]
-              mapped_count <- mapped_count + 1
-              cat("      ✓ A-Pattern gemappt:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
-              mapped <- TRUE
-              break
-            }
-          }
-        }
-        
-        # Generisches Pattern: Beliebige Buchstaben + Zahlen
-        if (!mapped && grepl("^[A-Z]+\\d+$", response_char)) {
-          numeric_code <- gsub("^[A-Z]+0*", "", response_char)
-          
-          if (numeric_code %in% names(labels)) {
-            response_labels[response_char] <- labels[numeric_code]
-            mapped_count <- mapped_count + 1
-            cat("      ✓ Generisch gemappt:", response_char, "-> (via", numeric_code, ") ->", labels[numeric_code], "\n")
-            mapped <- TRUE
-          }
-        }
-        
-        if (!mapped) {
-          cat("      ✗ Kein Match gefunden für:", response_char, "\n")
-        }
-      }
-      
-      # Debug: Zeige finale response_labels
-      cat("  Finale Response-Labels:\n")
-      for (resp in unique_responses) {
-        cat("    ", resp, "->", response_labels[as.character(resp)], "\n")
-      }
-      
-      if (mapped_count == 0) {
-        cat("  WARNUNG: Keine Response-Labels gemappt!\n")
-        cat("    Verfügbare Label-Keys:", paste(names(labels), collapse=", "), "\n")
-        cat("    Responses in Daten:", paste(unique_responses, collapse=", "), "\n")
-      } else {
-        cat("  ✓ Erfolgreich gemappt:", mapped_count, "von", length(unique_responses), "Responses\n")
-      }
-    }     } else {
-      cat("Keine Labels für Matrix-Responses gefunden\n")
-    }
+  # Mappe Response-Werte auf Labels (zentralisierte Funktion)
+  response_labels <- map_response_labels(unique_responses, labels, verbose = TRUE)
   
   
   
@@ -634,12 +521,12 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
   
   # Prüfe ob Kodierung verfügbar ist
   if (!is.na(var_config$coding) && var_config$coding != "") {
-    # Versuche zuerst RDS-Labels, dann Config
-    labels <- get_value_labels_with_priority(data, matrix_vars[1], list(variablen = var_config))
-    if (is.null(labels) || length(labels) == 0) {
-      labels <- parse_coding(var_config$coding)
+    # *** VEREINFACHTE LABEL-EXTRAKTION ***
+    labels <- get_matrix_labels(data, matrix_vars, matrix_name, var_config, var_config$coding)
+    
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("Kodierung gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
     }
-    cat("Kodierung gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
     
     # Erkenne dichotome Matrix (Y/N, 1/0, etc.)
     if (!is.null(labels) && length(labels) <= 3) {  # Max 3 Kategorien für dichotom
@@ -658,15 +545,10 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       }
     }
     
+    # *** VEREINFACHTES LABEL-MAPPING ***
     if (!is.null(labels) && length(labels) > 0) {
-      # Ersetze rohe Werte durch Labels wo verfügbar
-      for (response in unique_responses) {
-        response_char <- as.character(response)
-        if (response_char %in% names(labels)) {
-          response_labels[response_char] <- labels[response_char]
-          cat("  Label-Mapping:", response, "→", labels[response_char], "\n")
-        }
-      }
+      # Verwende zentralisierte Mapping-Funktion
+      response_labels <- map_response_labels(unique_responses, labels, verbose = FALSE)
     }
   }
   # *** ENDE NEUER CODE ***
@@ -2468,6 +2350,165 @@ get_value_labels_with_priority <- function(data, var_name, config = NULL) {
   return(labels)
 }
 
+# =============================================================================
+# NEUE HILFSFUNKTION: LABELS FÜR MATRIX-VARIABLEN MIT FALLBACK-STRATEGIE
+# =============================================================================
+
+get_matrix_labels <- function(data, matrix_vars, matrix_name = NULL, var_config = NULL, matrix_coding = NA) {
+  "Holt Labels für Matrix-Variable mit mehreren Fallback-Strategien (eliminiert Redundanz)"
+  
+  labels <- NULL
+  
+  # Strategie 1: Von erstem Matrix-Item (RDS labels)
+  if (length(matrix_vars) > 0 && !is.null(matrix_vars[1])) {
+    temp_config <- if (!is.null(var_config)) {
+      list(variablen = var_config)
+    } else if (!is.na(matrix_coding)) {
+      list(variablen = data.frame(
+        variable_name = matrix_vars[1],
+        coding = matrix_coding,
+        stringsAsFactors = FALSE
+      ))
+    } else {
+      NULL
+    }
+    
+    labels <- get_value_labels_with_priority(data, matrix_vars[1], temp_config)
+  }
+  
+  # Strategie 2: Von Matrix-Variable direkt (falls sie in Daten existiert)
+  if ((is.null(labels) || length(labels) == 0) && !is.null(matrix_name) && matrix_name %in% names(data)) {
+    temp_config <- if (!is.null(var_config)) {
+      list(variablen = var_config)
+    } else {
+      NULL
+    }
+    labels <- get_value_labels_with_priority(data, matrix_name, temp_config)
+  }
+  
+  # Strategie 3: Aus Config-Kodierung parsen
+  if ((is.null(labels) || length(labels) == 0) && !is.na(matrix_coding) && matrix_coding != "") {
+    labels <- parse_coding(matrix_coding)
+  }
+  
+  # Strategie 4: Aus var_config direkt
+  if ((is.null(labels) || length(labels) == 0) && !is.null(var_config) && 
+      "coding" %in% names(var_config) && !is.na(var_config$coding) && var_config$coding != "") {
+    labels <- parse_coding(var_config$coding)
+  }
+  
+  return(labels)
+}
+
+# =============================================================================
+# NEUE HILFSFUNKTION: INTELLIGENTES LABEL-MAPPING MIT PATTERN-ERKENNUNG
+# =============================================================================
+
+map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
+  "Mappt Response-Werte auf Labels mit intelligenter Pattern-Erkennung (AO01, A1, etc.)"
+  
+  if (is.null(labels) || length(labels) == 0) {
+    # Keine Labels vorhanden - verwende rohe Werte
+    response_labels <- unique_responses
+    names(response_labels) <- unique_responses
+    return(response_labels)
+  }
+  
+  # Initialisiere mit rohen Werten als Fallback
+  response_labels <- unique_responses
+  names(response_labels) <- unique_responses
+  
+  if (verbose) {
+    cat("  Mappe", length(unique_responses), "Responses auf", length(labels), "Labels\n")
+    cat("    Label-Keys:", paste(names(labels), collapse=", "), "\n")
+  }
+  
+  mapped_count <- 0
+  
+  for (response in unique_responses) {
+    response_char <- as.character(response)
+    mapped <- FALSE
+    
+    # Pattern 1: Direkte Übereinstimmung
+    if (response_char %in% names(labels)) {
+      response_labels[response_char] <- labels[response_char]
+      mapped_count <- mapped_count + 1
+      if (verbose) cat("      ✓ Direkt:", response_char, "->", labels[response_char], "\n")
+      mapped <- TRUE
+      next
+    }
+    
+    # Pattern 2: AO-Pattern (AO01, AO02, AO1, AO2)
+    if (!mapped && grepl("^AO\\d+$", response_char)) {
+      numeric_code <- gsub("^AO0*", "", response_char)  # AO01 -> 1
+      
+      candidates <- c(
+        response_char,                           # "AO01"
+        paste0("AO", numeric_code),              # "AO1"
+        numeric_code,                            # "1"
+        sprintf("%02d", as.numeric(numeric_code)) # "01"
+      )
+      
+      for (candidate in candidates) {
+        if (candidate %in% names(labels)) {
+          response_labels[response_char] <- labels[candidate]
+          mapped_count <- mapped_count + 1
+          if (verbose) cat("      ✓ AO-Pattern:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
+          mapped <- TRUE
+          break
+        }
+      }
+      
+      if (mapped) next
+    }
+    
+    # Pattern 3: A-Pattern (A1, A2, A10)
+    if (!mapped && grepl("^A\\d+$", response_char)) {
+      numeric_code <- gsub("^A", "", response_char)  # A1 -> 1
+      
+      candidates <- c(
+        response_char,  # "A1"
+        numeric_code    # "1"
+      )
+      
+      for (candidate in candidates) {
+        if (candidate %in% names(labels)) {
+          response_labels[response_char] <- labels[candidate]
+          mapped_count <- mapped_count + 1
+          if (verbose) cat("      ✓ A-Pattern:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
+          mapped <- TRUE
+          break
+        }
+      }
+      
+      if (mapped) next
+    }
+    
+    # Pattern 4: Generisches Präfix-Pattern (beliebige Buchstaben + Zahlen)
+    if (!mapped && grepl("^[A-Z]+\\d+$", response_char)) {
+      numeric_code <- gsub("^[A-Z]+0*", "", response_char)
+      
+      if (numeric_code %in% names(labels)) {
+        response_labels[response_char] <- labels[numeric_code]
+        mapped_count <- mapped_count + 1
+        if (verbose) cat("      ✓ Generisch:", response_char, "-> (via", numeric_code, ") ->", labels[numeric_code], "\n")
+        mapped <- TRUE
+        next
+      }
+    }
+    
+    if (!mapped && verbose) {
+      cat("      ✗ Kein Match:", response_char, "\n")
+    }
+  }
+  
+  if (verbose) {
+    cat("  ✓ Erfolgreich gemappt:", mapped_count, "von", length(unique_responses), "Responses\n")
+  }
+  
+  return(response_labels)
+}
+
 
 # =============================================================================
 # NEUE HILFSFUNKTION: LABEL-EXTRAKTION FÜR MATRIX-ITEMS
@@ -2975,63 +3016,13 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
   response_labels <- unique_responses
   names(response_labels) <- unique_responses
   
-  # Versuche IMMER Labels zu holen (auch ohne Config-Kodierung)
-  if (TRUE) {  # Geändert: Nicht nur wenn Config-Kodierung vorhanden
-    # Versuche von erstem Matrix-Item
-    labels <- NULL
-    if (length(matrix_vars) > 0) {
-      # Erstelle temporäre config für get_value_labels_with_priority
-      temp_config <- list(variablen = data.frame(
-        variable_name = matrix_vars[1],
-        coding = matrix_coding,
-        stringsAsFactors = FALSE
-      ))
-      labels <- get_value_labels_with_priority(data, matrix_vars[1], temp_config)
-    }
-    
-    # Fallback auf parse_coding
-    if (is.null(labels) || length(labels) == 0) {
-      labels <- parse_coding(matrix_coding)
-    }
-    
-    if (!is.null(labels) && length(labels) > 0) {
-      cat("  Labels für Matrix-Kreuztabelle gefunden:", length(labels), "Labels\n")
-      cat("    Label-Keys:", paste(names(labels), collapse=", "), "\n")
-      
-      # Mappe Response-Labels mit intelligenter Pattern-Erkennung
-      for (response in unique_responses) {
-        response_char <- as.character(response)
-        mapped <- FALSE
-        
-        # Direkt
-        if (response_char %in% names(labels)) {
-          response_labels[response_char] <- labels[response_char]
-          mapped <- TRUE
-        }
-        
-        # AO-Pattern
-        if (!mapped && grepl("^AO\\d+$", response_char)) {
-          numeric_code <- gsub("^AO0*", "", response_char)
-          if (numeric_code %in% names(labels)) {
-            response_labels[response_char] <- labels[numeric_code]
-            mapped <- TRUE
-          }
-        }
-        
-        # A-Pattern
-        if (!mapped && grepl("^A\\d+$", response_char)) {
-          numeric_code <- gsub("^A", "", response_char)
-          if (numeric_code %in% names(labels)) {
-            response_labels[response_char] <- labels[numeric_code]
-            mapped <- TRUE
-          }
-        }
-        
-        if (mapped) {
-          cat("      Mapped:", response_char, "->", response_labels[response_char], "\n")
-        }
-      }
-    }
+  # *** VEREINFACHTE LABEL-EXTRAKTION MIT NEUER HILFSFUNKTION ***
+  labels <- get_matrix_labels(data, matrix_vars, actual_matrix_name, NULL, matrix_coding)
+  
+  if (!is.null(labels) && length(labels) > 0) {
+    cat("  Labels für Matrix-Kreuztabelle gefunden:", length(labels), "Labels\n")
+    # Verwende zentralisierte Mapping-Funktion
+    response_labels <- map_response_labels(unique_responses, labels, verbose = FALSE)
   }
   
   # *** GEÄNDERT: Survey-Objekt für Gewichtung verwenden ***
