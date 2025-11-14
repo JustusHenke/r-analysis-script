@@ -662,9 +662,20 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         
         percent <- if (total_count > 0) round(count / total_count * 100, DIGITS_ROUND) else 0
         
-        # *** GEÄNDERT: VERWENDE LABELS STATT ROHE WERTE FÜR SPALTENNAMEN ***
-        response_label <- response_labels[as.character(response)]
-        clean_response <- make_clean_colname(response_label)  # Label statt response verwenden
+        # *** SICHERERE INDEXIERUNG: Verwende which() oder [1] um sicherzustellen, dass genau 1 Wert zurückkommt ***
+        response_char <- as.character(response)
+        response_label <- NA_character_
+        
+        # Versuche direkten Match in response_labels names
+        matching_idx <- which(names(response_labels) == response_char)
+        if (length(matching_idx) > 0) {
+          response_label <- response_labels[matching_idx[1]]
+        } else {
+          # Fallback zu rauem Wert
+          response_label <- response_char
+        }
+        
+        clean_response <- make_clean_colname(response_label)
         
         # Werte sammeln statt direkt zuweisen
         absolut_values[[paste0(clean_response, "_absolut")]] <- count
