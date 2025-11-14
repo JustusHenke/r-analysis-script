@@ -723,6 +723,20 @@ if (is_dichotomous_matrix) {
 
 ---
 
+## Known Issues Fixed
+
+### Vector Indexing Bug in Matrix Tables (FIXED - Commit ed2fae3)
+
+**Issue**: Dichotomous matrix tables (Y/N, 1/0 responses) failed with "Ersetzung hat 2 Zeilen, Daten haben 1"
+
+**Root Cause**: Unsafe named vector indexing in loops caused R's vector recycling to return multiple values
+
+**Fix**: Use explicit `which()` indexing with safety checks (line 665-676 in __AnalysisFunctions.R)
+
+**Details**: See `BUG_ANALYSIS_AND_FIX.md` for complete technical analysis
+
+---
+
 ## Testing Approach
 
 **No formal test suite**, but manual testing workflow:
