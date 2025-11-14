@@ -2529,11 +2529,14 @@ extract_item_label <- function(data, var_name, matrix_name) {
   "Extrahiert das echte Label einer Matrix-Variable aus verschiedenen Quellen"
   
   # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
-  if (var_name %in% names(custom_var_labels)) {
-    custom_label <- custom_var_labels[[var_name]]
-    if (!is.null(custom_label) && custom_label != "") {
-      cat("  Gefundenes Custom Label:", custom_label, "\n")
-      return(custom_label)
+  # SICHER: Prüfe ob custom_var_labels existiert (muss nicht immer definiert sein)
+  if (exists("custom_var_labels", inherits = FALSE)) {
+    if (var_name %in% names(custom_var_labels)) {
+      custom_label <- custom_var_labels[[var_name]]
+      if (!is.null(custom_label) && custom_label != "") {
+        cat("  Gefundenes Custom Label:", custom_label, "\n")
+        return(custom_label)
+      }
     }
   }
   
