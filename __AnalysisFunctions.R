@@ -2,10 +2,27 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Datum: 2025
+# Version: 1.2.0
+# Datum: 14.11.2025, 13:45 UTC
+# Letzte Änderung: 51d1896 (Intelligent label truncation)
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
 #               und Regressionsanalysen
+#
+# CHANGELOG - Letzte Änderungen:
+# ─────────────────────────────────────────────────────────────────────────
+# v1.2.0 (14.11.2025)
+#   • Intelligent label truncation: Bessere Item-Labels für numerische Matrizen
+#   • Duplicate frequency entries fixed: Korrekte Zählung mit which()
+#   • Defensive checks: Leere result_rows vor rbind() Aufrufen
+#   • Optional custom_var_labels: exists() Check für Crosstab-Kontext
+#   • Label length control: Intelligentes Truncating bei >80 Zeichen
+#
+# v1.1.0 (Vorherige Phase)
+#   • Redundancy elimination: 250 Zeilen duplizierter Code entfernt (74%)
+#   • Helper functions: get_matrix_labels(), map_response_labels()
+#   • Dokumentation: CRUSH.md, REFACTORING_SUMMARY.md
+# ─────────────────────────────────────────────────────────────────────────
 
 # =============================================================================
 # LOGGING FUNKTIONEN

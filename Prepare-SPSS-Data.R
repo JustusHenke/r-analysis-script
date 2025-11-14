@@ -1,3 +1,12 @@
+# =============================================================================
+# PREPARE-SPSS-DATA - DATENAUFBEREITUNG
+# =============================================================================
+# Version: 1.0.0
+# Datum: 14.11.2025, 13:45 UTC
+# Beschreibung: Konvertiert SPSS-Datensätze (SAV) zu RDS-Format
+#               Erhält Labels und Metadaten für weitere Analyse
+# =============================================================================
+
 # Pakete laden
 library(haven)
 

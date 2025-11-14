@@ -7,35 +7,35 @@ Dieses R-Skript führt eine automatisierte Auswertung von Umfragedaten durch, ba
 ## Dateien und Struktur
 
 ```
-├── 5 Analyse_Cockpit.R          # Hauptskript mit Konfiguration
+├── Analysis-Cockpit.R           # Hauptskript mit Konfiguration
 ├── __AnalysisFunctions.R        # Analysefunktionen 
-├── 5 Analyse-Konfig.xlsx        # Konfigurationsdatei (EXCEL)
-├── 00_Codebook.xlsx             # Codebook (optional)
-├── 3 Erhebungsdaten/
-│   └── survey_data_imputed.rds  # Ihre Umfragedaten
-└── 4 Auswertung/
-    └── Ergebnisse.xlsx          # Ausgabedatei
+├── Prepare-SPSS-Data.R          # SPSS-Datenschnittstelle (optional)
+├── Analysis-Config.xlsx         # Konfigurationsdatei (EXCEL)
+├── Rohdaten/
+│   └── survey_data.rds          # Ihre Umfragedaten (.rds, .csv oder .xlsx)
+└── Output/
+    └── Analyseergebnisse.xlsx   # Ausgabedatei
 ```
 
 ## Schnellstart
 
 ### 1. Daten vorbereiten
 - Umfragedaten als `.rds`, `.csv` oder `.xlsx` speichern
-- Pfad in `DATA_FILE` in `5 Analyse_Cockpit.R` anpassen
+- Pfad in `DATA_FILE` in `Analysis-Cockpit.R` anpassen
 
 ### 2. Konfiguration anpassen
-- `5 Analyse-Konfig.xlsx` öffnen und ausfüllen (siehe unten)
-- Pfade in `5 Analyse_Cockpit.R` prüfen
+- `Analysis-Config.xlsx` öffnen und ausfüllen (siehe unten)
+- Pfade in `Analysis-Cockpit.R` prüfen
 
 ### 3. Analyse starten
 ```r
-source("5 Analyse_Cockpit.R")
+source("Analysis-Cockpit.R")
 main()
 ```
 
 ## Konfiguration der Excel-Datei
 
-Die Datei `5 Analyse-Konfig.xlsx` enthält mehrere Arbeitsblätter:
+Die Datei `Analysis-Config.xlsx` enthält mehrere Arbeitsblätter:
 
 ### Sheet 1: "Variablen" (PFLICHT)
 
@@ -139,13 +139,13 @@ data_type: matrix
 coding: 1=Ausgewählt
 ```
 
-## Hauptkonfiguration (5 Analyse_Cockpit.R)
+## Hauptkonfiguration (Analysis-Cockpit.R)
 
 ### Datei-Pfade anpassen:
 ```r
-CONFIG_FILE <- "5 Analyse-Konfig.xlsx"
-DATA_FILE <- "3 Erhebungsdaten/survey_data_imputed.rds"
-OUTPUT_FILE <- "4 Auswertung/Stipendiaten-Analyse-Ergebnisse.xlsx"
+CONFIG_FILE <- "Analysis-Config.xlsx"
+DATA_FILE <- "Rohdaten/survey_data.rds"
+OUTPUT_FILE <- "Output/Analyseergebnisse.xlsx"
 ```
 
 ### Gewichtung:
@@ -279,6 +279,6 @@ Bei Problemen:
 ## Lizenz & Autor
 
 Survey Analysis Script  
-Autor: [Ihr Name]  
-Datum: 2025  
+Version: 1.2.0  
+Datum: 14.11.2025  
 Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf Excel-Konfiguration
