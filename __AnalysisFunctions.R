@@ -2574,16 +2574,32 @@ extract_item_label <- function(data, var_name, matrix_name) {
     }
   }
   
-  # 3. PRIORITÄT: Variable Labels aus Attributen (mit Längenbegrenzung)
+  # 3. PRIORITÄT: Variable Labels aus Attributen (mit intelligenter Längenbegrenzung)
   var_label <- attr(data[[var_name]], "label")
   if (!is.null(var_label) && var_label != "" && var_label != var_name) {
     # ACHTUNG: SPSS Labels können Fragetexte sein, nicht Matrix-Item-Labels
-    # Ignoriere diese wenn länger als 80 Zeichen (wahrscheinlich Fragebeschreibung)
-    if (nchar(var_label) < 80) {
+    # ABER: Verwende sie trotzdem mit intelligenter Kürzung
+    
+    # Prüfe ob Label ein Item-Label ist (nicht die Hauptfrage):
+    # - Item-Labels sind typischerweise < 150 Zeichen
+    # - Sie enthalten NICHT den kompletten Fragebeschreibung
+    
+    if (nchar(var_label) < 150) {
+      # Kurz genug - verwende wie es ist
       cat("  Gefundenes Variable Label:", var_label, "\n")
       return(var_label)
     } else {
-      cat("  Variable Label zu lang (", nchar(var_label), " Zeichen), ignoriert\n")
+      # Zu lang - kürze auf ersten sinnvollen Satz/Teil
+      # Versuche bis zum ersten Punkt oder 100 Zeichen
+      first_sentence_end <- gregexpr("\\.", var_label)[[1]][1]
+      if (first_sentence_end > 0 && first_sentence_end < 150) {
+        shortened <- substr(var_label, 1, first_sentence_end)
+      } else {
+        shortened <- substr(var_label, 1, 100)
+      }
+      shortened <- trimws(shortened)
+      cat("  Gefundenes Variable Label (gekürzt):", shortened, "...\n")
+      return(shortened)
     }
   }
   
