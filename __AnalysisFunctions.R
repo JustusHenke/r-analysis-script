@@ -2528,14 +2528,7 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
 extract_item_label <- function(data, var_name, matrix_name) {
   "Extrahiert das echte Label einer Matrix-Variable aus verschiedenen Quellen"
   
-  # 1. PRIORITÄT: Variable Labels aus den Daten selbst
-  var_label <- attr(data[[var_name]], "label")
-  if (!is.null(var_label) && var_label != "" && var_label != var_name) {
-    cat("  Gefundenes Variable Label:", var_label, "\n")
-    return(var_label)
-  }
-  
-  # 2. PRIORITÄT: Custom Variable Labels
+  # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
   if (var_name %in% names(custom_var_labels)) {
     custom_label <- custom_var_labels[[var_name]]
     if (!is.null(custom_label) && custom_label != "") {
@@ -2544,14 +2537,32 @@ extract_item_label <- function(data, var_name, matrix_name) {
     }
   }
   
-  # 3. PRIORITÄT: Value Labels (falls die Variable gelabelt ist)
+  # 2. PRIORITÄT: Variable Labels aus Labelled Package (kurz)
   if (requireNamespace("labelled", quietly = TRUE)) {
     if (labelled::is.labelled(data[[var_name]])) {
       var_labels <- labelled::var_label(data[[var_name]])
       if (!is.null(var_labels) && var_labels != "") {
-        cat("  Gefundenes Labelled Label:", var_labels, "\n")
-        return(var_labels)
+        # ACHTUNG: Labels von SPSS können sehr lang sein (komplette Fragen)
+        # Kürze auf max 100 Zeichen
+        shortened <- substr(var_labels, 1, 100)
+        if (shortened != var_name && nchar(var_labels) > 10) {  # Nur wenn sinnvoll
+          cat("  Gefundenes Labelled Label (gekürzt):", shortened, "...\n")
+          return(shortened)
+        }
       }
+    }
+  }
+  
+  # 3. PRIORITÄT: Variable Labels aus Attributen (mit Längenbegrenzung)
+  var_label <- attr(data[[var_name]], "label")
+  if (!is.null(var_label) && var_label != "" && var_label != var_name) {
+    # ACHTUNG: SPSS Labels können Fragetexte sein, nicht Matrix-Item-Labels
+    # Ignoriere diese wenn länger als 80 Zeichen (wahrscheinlich Fragebeschreibung)
+    if (nchar(var_label) < 80) {
+      cat("  Gefundenes Variable Label:", var_label, "\n")
+      return(var_label)
+    } else {
+      cat("  Variable Label zu lang (", nchar(var_label), " Zeichen), ignoriert\n")
     }
   }
   
