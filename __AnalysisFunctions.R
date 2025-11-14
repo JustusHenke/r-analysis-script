@@ -657,8 +657,19 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       prozent_values <- list()
       
       for (response in unique_responses) {
-        count <- freq_df$count[freq_df$response == response]
-        if (length(count) == 0) count <- 0
+        # *** SICHER: Extrahiere COUNT mit which() um Duplikate zu handlen ***
+        matching_idx <- which(freq_df$response == response)
+        
+        if (length(matching_idx) == 0) {
+          count <- 0
+        } else if (length(matching_idx) == 1) {
+          count <- freq_df$count[matching_idx]
+        } else {
+          # FEHLERFALL: Mehrere Häufigkeitszeilen für gleichen Response
+          # Summiere sie (sollte nicht vorkommen, aber defensiv)
+          cat("    WARNUNG: Mehrere Häufigkeitszeilen für Response '", response, "' - summiere\n")
+          count <- sum(freq_df$count[matching_idx])
+        }
         
         percent <- if (total_count > 0) round(count / total_count * 100, DIGITS_ROUND) else 0
         
@@ -667,9 +678,9 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         response_label <- NA_character_
         
         # Versuche direkten Match in response_labels names
-        matching_idx <- which(names(response_labels) == response_char)
-        if (length(matching_idx) > 0) {
-          response_label <- response_labels[matching_idx[1]]
+        label_matching_idx <- which(names(response_labels) == response_char)
+        if (length(label_matching_idx) > 0) {
+          response_label <- response_labels[label_matching_idx[1]]
         } else {
           # Fallback zu rauem Wert
           response_label <- response_char
