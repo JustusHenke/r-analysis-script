@@ -716,12 +716,19 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       result_row$Gesamt <- total_count
       
       result_rows[[var]] <- result_row
+      cat("    ✓ Zeile hinzugefügt für", var, "- Spalten:", ncol(result_row), "\n")
     }
   }
   
   # Alle Zeilen zusammenfügen
-  result_table <- do.call(rbind, result_rows)
-  rownames(result_table) <- NULL
+  # *** SICHER: Prüfe ob result_rows leer ist ***
+  if (length(result_rows) == 0) {
+    cat("WARNUNG: Keine Zeilen für kategoriale Tabelle erstellt!\n")
+    result_table <- data.frame()  # Leere Tabelle
+  } else {
+    result_table <- do.call(rbind, result_rows)
+    rownames(result_table) <- NULL
+  }
   
   # PRÜFE OB KODIERUNG VORHANDEN IST (ordinal behandeln) ODER DICHOTOM ERKANNT
   has_coding <- !is.na(var_config$coding) && var_config$coding != ""
