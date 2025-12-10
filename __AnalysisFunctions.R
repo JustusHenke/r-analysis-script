@@ -407,7 +407,7 @@ parse_coding <- function(coding_string) {
     } else {
       # Fallback: Sortiere nach bekannten ordinalen Mustern in den Label-Texten
       label_values <- as.character(labels)
-      sorted_values <- sort_response_categories_for_factors(label_values)
+      sorted_values <- sort_response_categories(label_values)
       
       # Rekonstruiere die Code-zu-Label Zuordnung in der sortierten Reihenfolge
       sorted_labels <- c()
@@ -1527,12 +1527,41 @@ create_numeric_versions <- function(data, config) {
       var <- ordinal_vars$variable_name[i]
       
       if (var %in% names(data)) {
-        # Numerische Version erstellen
-        data[[paste0(var, "_num")]] <- as.numeric(data[[var]])
+        # Numerische Version erstellen - ROBUST für haven_labelled + AO-Pattern
+        var_data <- data[[var]]
+        
+        # Zu character konvertieren (haven_labelled -> character)
+        char_values <- as.character(var_data)
+        
+        # Numerische Extraktion mit Fallback-Strategien
+        numeric_values <- rep(NA_real_, length(char_values))
+        
+        for (j in seq_along(char_values)) {
+          val <- char_values[j]
+          if (!is.na(val) && val != "") {
+            # Strategie 1: AO-Pattern (AO01 -> 1, AO02 -> 2)
+            if (grepl("^AO\\d+$", val)) {
+              numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+            }
+            # Strategie 2: Zahl am Anfang ("5 (sehr gut)" -> 5)
+            else if (grepl("^\\d+", val)) {
+              numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+            }
+            # Strategie 3: Direkte Konvertierung
+            else {
+              numeric_values[j] <- suppressWarnings(as.numeric(val))
+            }
+          }
+        }
+        
+        data[[paste0(var, "_num")]] <- numeric_values
         
         # Metadaten kopieren
         attr(data[[paste0(var, "_num")]], "original_variable") <- var
         attr(data[[paste0(var, "_num")]], "variable_type") <- "ordinal_numeric"
+        
+        successful <- sum(!is.na(numeric_values))
+        cat("  ", var, "-> ", var, "_num (", successful, " gültige Werte)\n", sep = "")
       }
     }
   }
