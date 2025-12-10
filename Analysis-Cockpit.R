@@ -1,8 +1,8 @@
 # =============================================================================
 # ANALYSIS-COCKPIT - HAUPTEINSTIEGSPUNKT
 # =============================================================================
-# Version: 1.2.0
-# Datum: 14.11.2025, 13:45 UTC
+# Version: 1.3.0
+# Datum: 12.10.2025, 13:45 UTC
 # Beschreibung: Hauptscript zur Steuerung der automatisierten Survey-Analyse
 #               Lädt Konfiguration, Daten und ruft Analysefunktionen auf
 # =============================================================================

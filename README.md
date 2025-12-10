@@ -246,6 +246,37 @@ Das Skript erstellt eine Excel-Datei mit folgenden Arbeitsblättern:
   - Prüfen Sie, ob `WEIGHT_VAR` in Ihren Daten existiert
   - Setzen Sie `WEIGHTS <- FALSE` für ungewichtete Analyse
 
+## Filter-Funktionalität
+
+Das Skript unterstützt individuelle Filter für jede Variable und Analyse, definiert über die Excel-Konfiguration:
+
+### Konfiguration:
+- **Spalte "Filter" in allen Excel-Sheets**
+  - `Variablen`-Sheet: Filter pro Variable
+  - `Kreuztabellen`-Sheet: Filter pro Kreuztabelle
+  - `Regressionen`-Sheet: Filter pro Regression
+  - `Textantworten`-Sheet: Filter pro Textanalyse
+
+### Filter-Syntax:
+- **Einfache Vergleiche**: `SD01==1`, `ALTER>=18`
+- **Textvergleiche**: `geschlecht=="weiblich"`, `bildung!="kein Abschluss"`
+- **Logische Verknüpfungen**: `(SD01==1 & ALTER>=25) | SD03=="hoch"`
+- **Funktionen**: `!is.na(ZUFRIEDENHEIT) & ZUFRIEDENHEIT>3`
+- **Matrix-Variablen**: `ZS01.001.==1` oder `ZS01[001]==1`
+
+### Beispiele in Excel-Konfiguration:
+```
+Variablen-Sheet: variable_name: SD01, filter: SD01==1
+Kreuztabellen-Sheet: variable_1: SD01, variable_2: GP01, filter: SD01==1 & GP01>3
+```
+
+### Berichterstattung:
+- Filter-Informationen werden in Excel-Output dokumentiert:
+  - **Filter angewendet**: Ja/Nein
+  - **Filter-Ausdruck**: `SD01==1 & GP01>3`
+  - **Original N**: Anzahl Fälle vor Filterung
+  - **Gefiltertes N**: Anzahl Fälle nach Filterung
+
 ## Advanced Features
 
 ### Mehrebenen-Regression
@@ -279,6 +310,6 @@ Bei Problemen:
 ## Lizenz & Autor
 
 Survey Analysis Script  
-Version: 1.2.0  
-Datum: 14.11.2025  
+Version: 1.3.0  
+Datum: 12.10.2025  
 Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf Excel-Konfiguration

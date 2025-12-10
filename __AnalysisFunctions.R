@@ -2,8 +2,8 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Version: 1.2.0
-# Datum: 14.11.2025, 13:45 UTC
+# Version: 1.3.0
+# Datum: 12.10.2025, 13:45 UTC
 # Letzte Änderung: 51d1896 (Intelligent label truncation)
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
@@ -11,6 +11,14 @@
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.3.0 (12.10.2025)
+#   • Filter-Funktionalität: Individuelle Filter für Variablen & Analysen
+#   • Filter-Syntax: Einfache R/logische Ausdrücke (z.B. 'SD01==1')
+#   • Sicherer Parser: parse_filter_expression() mit Validation
+#   • Excel-Konfiguration: Filter-Spalte in allen Sheets
+#   • Integration: Filter in deskriptive, Kreuztabellen, Regressionen, Textantworten
+#   • Berichterstattung: Filter-Info in Excel-Export dokumentiert
+#
 # v1.2.0 (14.11.2025)
 #   • Intelligent label truncation: Bessere Item-Labels für numerische Matrizen
 #   • Duplicate frequency entries fixed: Korrekte Zählung mit which()
@@ -126,6 +134,259 @@ get_file_extension <- function(filename) {
 }
 
 # =============================================================================
+# FILTER FUNKTIONEN
+# =============================================================================
+
+parse_filter_expression <- function(filter_string, data_columns = NULL) {
+  "Parst und validiert einen Filterausdruck für die Datenanalyse
+  
+  Args:
+    filter_string: Filterausdruck als String (z.B. 'SD01==1', 'ALTER>=18')
+    data_columns: Vektor von Variablennamen zur Validierung (optional)
+  
+  Returns:
+    Parsed filter expression als expression object oder NULL bei leerem Filter
+    Stoppt bei ungültigen Ausdrücken oder unbekannten Variablen
+  "
+  
+  # Leerer Filter
+  if (is.na(filter_string) || filter_string == "" || filter_string == "NA") {
+    return(NULL)
+  }
+  
+  cat("Parsing Filter:", filter_string, "\n")
+  
+  # Sicherheitsprüfung: Verbotene Funktionen
+  forbidden_patterns <- c(
+    "\\blibrary\\(",
+    "\\bsource\\(",
+    "\\bsystem\\(",
+    "\\bfile\\(",
+    "\\bread\\(",
+    "\\bwrite\\(",
+    "\\beval\\(",
+    "\\bparse\\(",
+    "\\bget\\(",
+    "\\bsetwd\\(",
+    "\\bdir\\(",
+    "\\bsetwd\\("
+  )
+  
+  for (pattern in forbidden_patterns) {
+    if (grepl(pattern, filter_string, ignore.case = TRUE)) {
+      stop("Filter enthält unerlaubte Funktion: ", filter_string)
+    }
+  }
+  
+  # Erlaubte Operatoren und Funktionen
+  allowed_patterns <- c(
+    # Operatoren
+    "==", "!=", ">", "<", ">=", "<=", "&", "\\|", "!", "\\(", "\\)",
+    # Funktionen
+    "\\bis\\.na\\(",
+    "\\bnchar\\(",
+    "\\bgrepl\\(",
+    "\\bsubstr\\(",
+    "\\bstr_detect\\(",
+    "\\b%in%",
+    "\\bis\\.numeric\\(",
+    "\\bis\\.character\\("
+  )
+  
+  # Validierung der Syntax durch Parsing-Versuch
+  parsed_expr <- tryCatch({
+    parse(text = filter_string)
+  }, error = function(e) {
+    stop("Filter-Syntaxfehler in '", filter_string, "': ", e$message)
+  })
+  
+  # Extrahiere alle Variablen aus dem Ausdruck
+  variables_in_expr <- all.vars(parsed_expr)
+  
+  # Validiere Variablen gegen Daten (falls data_columns gegeben)
+  if (!is.null(data_columns) && length(variables_in_expr) > 0) {
+    invalid_vars <- variables_in_expr[!variables_in_expr %in% data_columns]
+    if (length(invalid_vars) > 0) {
+      stop("Unbekannte Variable(n) im Filter '", filter_string, "': ", 
+           paste(invalid_vars, collapse = ", "))
+    }
+  }
+  
+  # Erlaubte Zeichen überprüfen (zusätzliche Sicherheit)
+  allowed_chars <- "[a-zA-Z0-9._><=!&|()\"'\\[\\]\\s\\-+]"
+  illegal_chars <- gsub(allowed_chars, "", filter_string)
+  illegal_chars <- gsub(" ", "", illegal_chars)  # Leerzeichen ignorieren
+  illegal_chars <- gsub("==", "", illegal_chars)  # Doppelgleich entfernen
+  illegal_chars <- gsub("!=", "", illegal_chars)  # Ungleich entfernen
+  illegal_chars <- gsub("<=", "", illegal_chars)  # <= entfernen
+  illegal_chars <- gsub(">=", "", illegal_chars)  # >= entfernen
+  
+  if (nchar(illegal_chars) > 0) {
+    warning("Potentiell unsichere Zeichen im Filter '", filter_string, "': '", 
+            paste(unique(strsplit(illegal_chars, "")[[1]]), collapse = "', '"), "'")
+  }
+  
+  return(parsed_expr)
+}
+
+apply_filter <- function(data, filter_expr) {
+  "Wendet einen geparsten Filterausdruck auf einen Datensatz an
+  
+  Args:
+    data: Datensatz (data.frame)
+    filter_expr: Geparster Filterausdruck (von parse_filter_expression)
+  
+  Returns:
+    Gefilterter Datensatz oder Original bei NULL
+  "
+  
+  if (is.null(filter_expr)) {
+    return(data)
+  }
+  
+  tryCatch({
+    # Evaluierung im Datensatz-Kontext
+    filter_result <- eval(filter_expr, envir = data)
+    
+    # Sicherstellen, dass Ergebnis logisch ist
+    if (!is.logical(filter_result)) {
+      stop("Filter-Ausdruck muss logische Werte (TRUE/FALSE) zurückgeben")
+    }
+    
+    if (length(filter_result) != nrow(data)) {
+      stop("Filter-Ergebnis hat falsche Länge: ", length(filter_result), 
+           " statt ", nrow(data))
+    }
+    
+    # Datensatz filtern
+    filtered_data <- data[filter_result & !is.na(filter_result), , drop = FALSE]
+    
+    cat("Filter angewendet: ", nrow(filtered_data), " von ", nrow(data), 
+        " Fällen (", round(nrow(filtered_data)/nrow(data)*100, 1), "%)\n")
+    
+    return(filtered_data)
+    
+  }, error = function(e) {
+    stop("Fehler beim Anwenden des Filters: ", e$message)
+  })
+}
+
+validate_filter_config <- function(filter_string, variable_names) {
+  "Validiert einen Filterausdruck für eine Konfiguration
+  
+  Args:
+    filter_string: Filterausdruck als String
+    variable_names: Verfügbare Variablennamen im Datensatz
+  
+  Returns:
+    TRUE wenn Filter gültig, sonst Fehlermeldung
+  "
+  
+  if (is.na(filter_string) || filter_string == "" || filter_string == "NA") {
+    return(TRUE)
+  }
+  
+  # Versuche zu parsen
+  parsed_expr <- tryCatch({
+    parse(text = filter_string)
+  }, error = function(e) {
+    return(paste("Syntaxfehler:", e$message))
+  })
+  
+  # Extrahiere Variablen
+  expr_vars <- tryCatch({
+    all.vars(parsed_expr)
+  }, error = function(e) {
+    return(character(0))
+  })
+  
+  # Prüfe auf unbekannte Variablen
+  if (length(expr_vars) > 0) {
+    unknown_vars <- expr_vars[!expr_vars %in% variable_names]
+    if (length(unknown_vars) > 0) {
+      return(paste("Unbekannte Variable(n):", paste(unknown_vars, collapse = ", ")))
+    }
+  }
+  
+  return(TRUE)
+}
+
+apply_row_filter <- function(data, config_row, variable_names = NULL) {
+  "Wendet den Filter aus einer Config-Zeile auf den Datensatz an
+  
+  Args:
+    data: Datensatz (data.frame)
+    config_row: Einzelne Zeile aus Config (z.B. config$variablen[i,])
+    variable_names: Optionale Liste verfügbarer Variablennamen zur Validierung
+  
+  Returns:
+    Gefilterter Datensatz oder Original wenn kein Filter
+  "
+  
+  # Filter-String extrahieren (kann 'filter' oder 'Filter' Spalte sein)
+  filter_string <- NULL
+  if ("filter" %in% names(config_row)) {
+    filter_string <- config_row$filter[1]
+  } else if ("Filter" %in% names(config_row)) {
+    filter_string <- config_row$Filter[1]
+  }
+  
+  # Kein Filter definiert
+  if (is.null(filter_string) || is.na(filter_string) || filter_string == "") {
+    return(list(
+      data = data,
+      filtered = FALSE,
+      filter_info = NULL
+    ))
+  }
+  
+  # Validieren (falls variable_names gegeben)
+  if (!is.null(variable_names)) {
+    validation_result <- validate_filter_config(filter_string, variable_names)
+    if (validation_result != TRUE) {
+      warning("Ungültiger Filter '", filter_string, "': ", validation_result, ". Filter wird ignoriert.")
+      return(list(
+        data = data,
+        filtered = FALSE,
+        filter_info = NULL
+      ))
+    }
+  }
+  
+  # Filter parsen und anwenden
+  tryCatch({
+    filter_expr <- parse_filter_expression(filter_string, variable_names)
+    if (is.null(filter_expr)) {
+      return(list(
+        data = data,
+        filtered = FALSE,
+        filter_info = NULL
+      ))
+    }
+    
+    filtered_data <- apply_filter(data, filter_expr)
+    
+    return(list(
+      data = filtered_data,
+      filtered = TRUE,
+      filter_info = list(
+        filter_string = filter_string,
+        original_n = nrow(data),
+        filtered_n = nrow(filtered_data)
+      )
+    ))
+    
+  }, error = function(e) {
+    warning("Fehler beim Anwenden des Filters '", filter_string, "': ", e$message, ". Filter wird ignoriert.")
+    return(list(
+      data = data,
+      filtered = FALSE,
+      filter_info = NULL
+    ))
+  })
+}
+
+# =============================================================================
 # KONFIGURATION LADEN UND VALIDIEREN
 # =============================================================================
 
@@ -153,7 +414,9 @@ load_config <- function() {
       use_NA = if("use_NA" %in% names(.)) as.logical(use_NA) else INCLUDE_MISSING_DEFAULT,
       # Konvertiere numerische Spalten
       min_value = as.numeric(min_value),
-      max_value = as.numeric(max_value)
+      max_value = as.numeric(max_value),
+      # Filter-Spalte (optional) als String behalten
+      filter = if("filter" %in% names(.)) filter else NA_character_
     ) %>%
     # Entferne leere Zeilen
     filter(!is.na(variable_name) & variable_name != "")
@@ -164,6 +427,9 @@ load_config <- function() {
   # Sheet 2: Kreuztabellen (optional)
   if ("Kreuztabellen" %in% sheet_names) {
     config$kreuztabellen <- read_excel(CONFIG_FILE, sheet = "Kreuztabellen", col_types = "text") %>%
+      mutate(
+        filter = if("filter" %in% names(.)) filter else NA_character_
+      ) %>%
       filter(!is.na(analysis_name) & analysis_name != "")
     cat("Kreuztabellen-Konfiguration geladen:", nrow(config$kreuztabellen), "Analysen\n")
   } else {
@@ -174,6 +440,9 @@ load_config <- function() {
   # Sheet 3: Regressionen (optional)
   if ("Regressionen" %in% sheet_names) {
     config$regressionen <- read_excel(CONFIG_FILE, sheet = "Regressionen", col_types = "text") %>%
+      mutate(
+        filter = if("filter" %in% names(.)) filter else NA_character_
+      ) %>%
       filter(!is.na(regression_name) & regression_name != "")
     cat("Regressions-Konfiguration geladen:", nrow(config$regressionen), "Analysen\n")
   } else {
@@ -187,6 +456,9 @@ load_config <- function() {
       mutate(
         min_length = as.numeric(ifelse(is.na(min_length), 3, min_length)),
         include_empty = as.logical(ifelse(is.na(include_empty), FALSE, include_empty))
+      ) %>%
+      mutate(
+        filter = if("filter" %in% names(.)) filter else NA_character_
       ) %>%
       filter(!is.na(analysis_name) & analysis_name != "")
     cat("Textantworten-Konfiguration geladen:", nrow(config$textantworten), "Analysen\n")
@@ -1910,13 +2182,6 @@ create_descriptive_tables <- function(prepared_data) {
   
   results <- list()
   
-  # Gewichtetes Survey-Objekt erstellen falls gewünscht
-  survey_obj <- NULL
-  if (WEIGHTS && WEIGHT_VAR %in% names(data)) {
-    survey_obj <- create_survey_object(data, WEIGHT_VAR)
-    cat("Gewichtetes Survey-Objekt erstellt mit Variable:", WEIGHT_VAR, "\n")
-  }
-  
   # Für jede Variable entsprechende Tabelle erstellen
   for (i in 1:nrow(config$variablen)) {
     var_name <- config$variablen$variable_name[i]
@@ -1929,21 +2194,38 @@ create_descriptive_tables <- function(prepared_data) {
     
     cat("Verarbeite:", var_name, "(", var_type, ")\n")
     
+    # Filter für diese Variable anwenden (falls vorhanden)
+    filtered <- apply_row_filter(data, config$variablen[i,], names(data))
+    current_data <- filtered$data
+    filter_applied <- filtered$filtered
+    filter_info <- filtered$filter_info
+    
+    # Gewichtetes Survey-Objekt für gefilterte Daten erstellen (falls nötig)
+    current_survey_obj <- NULL
+    if (WEIGHTS && WEIGHT_VAR %in% names(current_data)) {
+      current_survey_obj <- create_survey_object(current_data, WEIGHT_VAR)
+      if (filter_applied) {
+        cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
+            filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
+            round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+      }
+    }
+    
     # NEUER FIX: Fehlerbehandlung für jede Variable
     result <- tryCatch({
-      if (var_name %in% names(data)) {
+      if (var_name %in% names(current_data)) {
         switch(var_type,
-               "numeric" = create_numeric_table(data, var_name, question_text, use_na, survey_obj),
-               "nominal_coded" = create_nominal_coded_table(data, config$variablen[i,], use_na, survey_obj),
-               "nominal_text" = create_nominal_text_table(data, var_name, question_text, use_na, category_info, survey_obj),
-               "nominal" = create_nominal_text_table(data, var_name, question_text, use_na, category_info, survey_obj),
-               "ordinal" = create_ordinal_table(data, config$variablen[i,], use_na, survey_obj),
-               "dichotom" = create_dichotom_table(data, config$variablen[i,], use_na, survey_obj),
-               "matrix" = create_matrix_table(data, config$variablen[i,], use_na, survey_obj)
+               "numeric" = create_numeric_table(current_data, var_name, question_text, use_na, current_survey_obj),
+               "nominal_coded" = create_nominal_coded_table(current_data, config$variablen[i,], use_na, current_survey_obj),
+               "nominal_text" = create_nominal_text_table(current_data, var_name, question_text, use_na, category_info, current_survey_obj),
+               "nominal" = create_nominal_text_table(current_data, var_name, question_text, use_na, category_info, current_survey_obj),
+               "ordinal" = create_ordinal_table(current_data, config$variablen[i,], use_na, current_survey_obj),
+               "dichotom" = create_dichotom_table(current_data, config$variablen[i,], use_na, current_survey_obj),
+               "matrix" = create_matrix_table(current_data, config$variablen[i,], use_na, current_survey_obj)
         )
       } else if (config$variablen$data_type[i] == "matrix") {
         # Matrix-Variable behandeln
-        create_matrix_table(data, config$variablen[i,], use_na, survey_obj)
+        create_matrix_table(current_data, config$variablen[i,], use_na, current_survey_obj)
       } else {
         cat("WARNUNG: Variable", var_name, "nicht in Daten gefunden\n")
         NULL
@@ -1952,6 +2234,16 @@ create_descriptive_tables <- function(prepared_data) {
       cat("FEHLER bei Variable", var_name, ":", e$message, "\n")
       NULL
     })
+    
+    # Filter-Info zum Ergebnis hinzufügen (falls Filter angewendet)
+    if (!is.null(result) && filter_applied) {
+      result$filter_applied <- TRUE
+      result$filter_string <- filter_info$filter_string
+      result$original_n <- filter_info$original_n
+      result$filtered_n <- filter_info$filtered_n
+    } else if (!is.null(result)) {
+      result$filter_applied <- FALSE
+    }
     
     # Nur hinzufügen wenn Ergebnis nicht NULL
     if (!is.null(result)) {
@@ -3819,22 +4111,42 @@ create_crosstabs <- function(prepared_data) {
     
     cat("💫 Verarbeite Kreuztabelle:", analysis_name, "(", var1, "x", var2, ")\n")
     
+    # Filter für diese Kreuztabelle anwenden (falls vorhanden)
+    filtered <- apply_row_filter(data, config$kreuztabellen[i,], names(data))
+    current_data <- filtered$data
+    filter_applied <- filtered$filtered
+    filter_info <- filtered$filter_info
+    
+    # Gewichtetes Survey-Objekt für gefilterte Daten erstellen (falls nötig)
+    current_survey_obj <- NULL
+    if (WEIGHTS && WEIGHT_VAR %in% names(current_data)) {
+      current_survey_obj <- create_survey_object(current_data, WEIGHT_VAR)
+      if (filter_applied) {
+        cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
+            filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
+            round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+      }
+    } else if (!filter_applied) {
+      # Kein Filter angewendet: globales Survey-Objekt verwenden (falls vorhanden)
+      current_survey_obj <- survey_obj
+    }
+    
     # MATRIX-ERKENNUNG VOR EXISTENZPRÜFUNG
-    var1_is_matrix <- is_matrix_variable(var1, data, config)
-    var2_is_matrix <- is_matrix_variable(var2, data, config)
+    var1_is_matrix <- is_matrix_variable(var1, current_data, config)
+    var2_is_matrix <- is_matrix_variable(var2, current_data, config)
     
     # Prüfen ob Variablen existieren (mit Matrix-Ausnahme)
-    if (!var1_is_matrix && !var1 %in% names(data)) {
+    if (!var1_is_matrix && !var1 %in% names(current_data)) {
       cat("WARNUNG: Variable", var1, "nicht gefunden für", analysis_name, "\n")
       next
     }
-    if (!var2_is_matrix && !var2 %in% names(data)) {
+    if (!var2_is_matrix && !var2 %in% names(current_data)) {
       cat("WARNUNG: Variable", var2, "nicht gefunden für", analysis_name, "\n")
       next
     }
     
     # Spezialfall: Beide normal aber eine nicht gefunden
-    if (!var1_is_matrix && !var2_is_matrix && (!var1 %in% names(data) || !var2 %in% names(data))) {
+    if (!var1_is_matrix && !var2_is_matrix && (!var1 %in% names(current_data) || !var2 %in% names(current_data))) {
       cat("WARNUNG: Variable(n) nicht gefunden für", analysis_name, "\n")
       next
     }
@@ -3848,13 +4160,13 @@ create_crosstabs <- function(prepared_data) {
     }
     
     # Kreuztabelle erstellen (config ist jetzt optional)
-    crosstab_result <- create_contingency_table(data, var1, var2, survey_obj, config)
+    crosstab_result <- create_contingency_table(current_data, var1, var2, current_survey_obj, config)
     
     # Statistischen Test durchführen (nur für normale Kreuztabellen)
     test_result <- NULL
     if (!is.null(crosstab_result) && !"matrix_items" %in% names(crosstab_result)) {
       # Nur für normale Kreuztabellen, nicht für Matrix-Kreuztabellen
-      test_result <- perform_statistical_test(data, var1, var2, test_type, survey_obj, config)
+      test_result <- perform_statistical_test(current_data, var1, var2, test_type, current_survey_obj, config)
     } else {
       # Für Matrix-Kreuztabellen: Dummy-Test-Ergebnis
       test_result <- list(
@@ -3872,7 +4184,11 @@ create_crosstabs <- function(prepared_data) {
       variable_2 = var2,
       crosstab = crosstab_result,
       statistical_test = test_result,
-      weighted = !is.null(survey_obj) && WEIGHTS
+      weighted = !is.null(current_survey_obj) && WEIGHTS,
+      filter_applied = filter_applied,
+      filter_string = if(filter_applied) filter_info$filter_string else NA_character_,
+      original_n = if(filter_applied) filter_info$original_n else nrow(data),
+      filtered_n = if(filter_applied) filter_info$filtered_n else nrow(current_data)
     )
   }
   
@@ -4454,9 +4770,29 @@ run_regressions <- function(prepared_data) {
     cat("  AV:", dependent_var, "\n")
     cat("  UV:", paste(independent_vars, collapse = ", "), "\n")
     
+    # Filter für diese Regression anwenden (falls vorhanden)
+    filtered <- apply_row_filter(data, config$regressionen[i,], names(data))
+    current_data <- filtered$data
+    filter_applied <- filtered$filtered
+    filter_info <- filtered$filter_info
+    
+    # Gewichtetes Survey-Objekt für gefilterte Daten erstellen (falls nötig)
+    current_survey_obj <- NULL
+    if (WEIGHTS && WEIGHT_VAR %in% names(current_data)) {
+      current_survey_obj <- create_survey_object(current_data, WEIGHT_VAR)
+      if (filter_applied) {
+        cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
+            filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
+            round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+      }
+    } else if (!filter_applied) {
+      # Kein Filter angewendet: globales Survey-Objekt verwenden (falls vorhanden)
+      current_survey_obj <- survey_obj
+    }
+    
     # Prüfen ob alle Variablen existieren
     all_vars <- c(dependent_var, independent_vars)
-    missing_vars <- all_vars[!all_vars %in% names(data)]
+    missing_vars <- all_vars[!all_vars %in% names(current_data)]
     
     if (length(missing_vars) > 0) {
       cat("WARNUNG: Variable(n) nicht gefunden:", paste(missing_vars, collapse = ", "), "\n")
@@ -4464,10 +4800,16 @@ run_regressions <- function(prepared_data) {
     }
     
     # Regression durchführen
-    regression_result <- perform_regression(data, dependent_var, independent_vars, 
-                                            regression_type, survey_obj, config, regression_name)
+    regression_result <- perform_regression(current_data, dependent_var, independent_vars, 
+                                            regression_type, current_survey_obj, config, regression_name)
     
     if (!is.null(regression_result)) {
+      # Filter-Info zum Ergebnis hinzufügen
+      regression_result$filter_applied <- filter_applied
+      regression_result$filter_string <- if(filter_applied) filter_info$filter_string else NA_character_
+      regression_result$original_n <- if(filter_applied) filter_info$original_n else nrow(data)
+      regression_result$filtered_n <- if(filter_applied) filter_info$filtered_n else nrow(current_data)
+      
       results[[regression_name]] <- regression_result
     }
   }
@@ -5309,17 +5651,30 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
     include_empty <- config$textantworten$include_empty[i]
     
     cat("\n--- Verarbeite:", analysis_name, "---\n")
+    
+    # Filter für diese Textanalyse anwenden (falls vorhanden)
+    filtered <- apply_row_filter(data, config$textantworten[i,], names(data))
+    current_data <- filtered$data
+    filter_applied <- filtered$filtered
+    filter_info <- filtered$filter_info
+    
+    if (filter_applied) {
+      cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
+          filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
+          round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+    }
+    
     cat("Suche Text-Variable:", text_var, "\n")
     
     # DIREKTE PRÜFUNG - Config ist bereits aktualisiert!
-    if (!text_var %in% names(data)) {
+    if (!text_var %in% names(current_data)) {
       cat("ÜBERSPRINGE:", analysis_name, "- Text-Variable", text_var, "nicht in Daten gefunden\n")
-      cat("Verfügbare ähnliche Variablen:", paste(names(data)[grepl(text_var, names(data))], collapse = ", "), "\n")
+      cat("Verfügbare ähnliche Variablen:", paste(names(current_data)[grepl(text_var, names(current_data))], collapse = ", "), "\n")
       next
     }
     
     # Sort-Variable prüfen
-    if (!is.na(sort_var) && sort_var != "" && !sort_var %in% names(data)) {
+    if (!is.na(sort_var) && sort_var != "" && !sort_var %in% names(current_data)) {
       cat("WARNUNG: Sort-Variable", sort_var, "nicht gefunden, verwende ohne Sortierung\n")
       sort_var <- NA
     }
@@ -5327,9 +5682,10 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
     cat("✓ Verwende Text-Variable:", text_var, "| Sort-Variable:", sort_var, "\n")
     
     # Extrahiere Textantworten (unverändert)
-    text_result <- extract_text_responses_simple(data, text_var, sort_var, min_length, include_empty)
+    text_result <- extract_text_responses_simple(current_data, text_var, sort_var, min_length, include_empty)
     
     if (!is.null(text_result)) {
+      # Filter-Info zum Ergebnis hinzufügen
       results[[analysis_name]] <- list(
         analysis_name = analysis_name,
         text_variable = text_var,
@@ -5337,7 +5693,11 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
         min_length = min_length,
         include_empty = include_empty,
         responses = text_result$responses,
-        summary = text_result$summary
+        summary = text_result$summary,
+        filter_applied = filter_applied,
+        filter_string = if(filter_applied) filter_info$filter_string else NA_character_,
+        original_n = if(filter_applied) filter_info$original_n else nrow(data),
+        filtered_n = if(filter_applied) filter_info$filtered_n else nrow(current_data)
       )
       cat("✓ Analyse", analysis_name, "erfolgreich abgeschlossen\n")
     }
@@ -5778,6 +6138,15 @@ export_descriptive_statistics <- function(wb, descriptive_results, header_style,
       current_row <- current_row + 1
     }
     
+    # Filter info (falls angewendet)
+    if (!is.null(result$filter_applied) && result$filter_applied) {
+      filter_text <- paste0("Filter angewendet: ", result$filter_string, " (", 
+                            result$filtered_n, " von ", result$original_n, " Fällen, ",
+                            round(result$filtered_n/result$original_n*100, 1), "%)")
+      writeData(wb, "Deskriptive_Statistiken", filter_text, startRow = current_row)
+      current_row <- current_row + 1
+    }
+    
     # Tabelle(n) schreiben basierend auf Typ
     if (result$type == "ordinal" && "table_frequencies" %in% names(result)) {
       # ORDINALE VARIABLEN - Häufigkeiten + Numerische Kennwerte
@@ -5889,6 +6258,15 @@ export_crosstabs <- function(wb, crosstab_results, header_style, table_style, ti
     # Gewichtung info
     if (result$weighted) {
       writeData(wb, "Kreuztabellen", "Gewichtete Ergebnisse", startRow = current_row)
+      current_row <- current_row + 1
+    }
+    
+    # Filter info (falls angewendet)
+    if (!is.null(result$filter_applied) && result$filter_applied) {
+      filter_text <- paste0("Filter angewendet: ", result$filter_string, " (", 
+                            result$filtered_n, " von ", result$original_n, " Fällen, ",
+                            round(result$filtered_n/result$original_n*100, 1), "%)")
+      writeData(wb, "Kreuztabellen", filter_text, startRow = current_row)
       current_row <- current_row + 1
     }
     
