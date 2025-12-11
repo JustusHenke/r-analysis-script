@@ -9,9 +9,10 @@ This is an **R-based automated survey data analysis system** designed for academ
 **Key Characteristics**:
 - Declarative configuration via Excel (no coding required for basic analyses)
 - Supports weighted analyses
-- Handles complex LimeSurvey matrix questions
+- Handles complex LimeSurvey matrix questions with statistical tests
 - Preserves SPSS/haven labels from RDS files
 - Generates formatted Excel output with multiple sheets
+- **NEW (v1.3.1)**: Statistical tests for matrix crosstabs (chi-square, t-test, ANOVA, etc. per item)
 
 ---
 
@@ -238,10 +239,11 @@ Open-ended text response processing:
      - Verbose mode for debugging
    - `extract_item_label()`: Extracts labels for matrix sub-items
 
-8. **Cross-Tabulations** (lines 2598-3200+)
+8. **Cross-Tabulations** (lines 2598-3200+, updated in v1.3.1)
    - `create_matrix_crosstab()`: Matrix × categorical variable
    - `create_labeled_factor()`: Apply labels to factors
-   - Statistical test support: chi-square, t-test, ANOVA, correlation
+   - **NEW**: Automatic statistical tests for matrix crosstabs (all test types supported)
+   - Statistical test support: chi-square, t-test, ANOVA, correlation per matrix item
 
 9. **Utility Functions**
    - `sort_response_categories()`: Intelligent sorting of ordinal responses
@@ -734,6 +736,20 @@ if (is_dichotomous_matrix) {
 **Fix**: Use explicit `which()` indexing with safety checks (line 665-676 in __AnalysisFunctions.R)
 
 **Details**: See `BUG_ANALYSIS_AND_FIX.md` for complete technical analysis
+
+### Matrix Crosstab Statistical Tests (FIXED - v1.3.1)
+
+**Issue**: Matrix crosstabs returned "Statistische Tests für Matrix-Variablen nicht unterstützt" instead of running tests
+
+**Root Cause**: Original code skipped test execution for matrix crosstabs entirely
+
+**Solution**: Implemented iterative test execution (lines 4166-4194 in __AnalysisFunctions.R):
+- Detects matrix crosstabs via `"matrix_items" %in% names(crosstab_result)`
+- Runs `perform_statistical_test()` for each matrix item vs. group variable
+- Stores results in `item_tests` list within test_result structure
+- Excel export (lines 6414-6524) shows summary table for all items
+
+**Impact**: All statistical tests now supported for matrix crosstabs (chi-square, t-test, ANOVA, correlation, Mann-Whitney)
 
 ---
 

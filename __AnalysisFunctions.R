@@ -4162,19 +4162,35 @@ create_crosstabs <- function(prepared_data) {
     # Kreuztabelle erstellen (config ist jetzt optional)
     crosstab_result <- create_contingency_table(current_data, var1, var2, current_survey_obj, config)
     
-    # Statistischen Test durchführen (nur für normale Kreuztabellen)
+    # Statistischen Test durchführen (für normale und Matrix-Kreuztabellen)
     test_result <- NULL
-    if (!is.null(crosstab_result) && !"matrix_items" %in% names(crosstab_result)) {
-      # Nur für normale Kreuztabellen, nicht für Matrix-Kreuztabellen
-      test_result <- perform_statistical_test(current_data, var1, var2, test_type, current_survey_obj, config)
-    } else {
-      # Für Matrix-Kreuztabellen: Dummy-Test-Ergebnis
-      test_result <- list(
-        test = "Matrix-Kreuztabelle",
-        result = "Statistische Tests für Matrix-Variablen nicht unterstützt",
-        p_value = NA,
-        statistic = NA
-      )
+    if (!is.null(crosstab_result)) {
+      if (!"matrix_items" %in% names(crosstab_result)) {
+        # Normale Kreuztabelle
+        test_result <- perform_statistical_test(current_data, var1, var2, test_type, current_survey_obj, config)
+      } else {
+        # Matrix-Kreuztabelle: Statistische Tests für jedes Matrix-Item
+        matrix_items <- crosstab_result$matrix_items
+        group_var <- if(var1_is_matrix) var2 else var1
+        
+        # Sammle Testergebnisse für alle Matrix-Items
+        matrix_test_results <- list()
+        
+        for (item in matrix_items) {
+          # Für jedes Matrix-Item den entsprechenden Test durchführen
+          item_test_result <- perform_statistical_test(current_data, item, group_var, test_type, current_survey_obj, config)
+          matrix_test_results[[item]] <- item_test_result
+        }
+        
+        # Erstelle zusammengefasstes Testergebnis
+        test_result <- list(
+          test = paste("Matrix-Kreuztabelle -", test_type, "Test"),
+          result = paste("Tests für", length(matrix_items), "Matrix-Items durchgeführt"),
+          p_value = NA,
+          statistic = NA,
+          item_tests = matrix_test_results
+        )
+      }
     }
     
     # Ergebnisse kombinieren
@@ -6400,16 +6416,36 @@ export_statistical_tests <- function(wb, crosstab_results, header_style, table_s
     
     if (!is.null(result$statistical_test)) {
       test <- result$statistical_test
-      test_summary <- rbind(test_summary, data.frame(
-        Analyse = analysis_name,
-        Variable_1 = result$variable_1,
-        Variable_2 = result$variable_2,
-        Test = test$test,
-        Statistik = if(!is.na(test$statistic)) as.character(test$statistic) else "-",
-        p_Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-",
-        Ergebnis = test$result,
-        stringsAsFactors = FALSE
-      ))
+      
+      # Prüfen ob Matrix-Test mit mehreren Item-Tests
+      if (!is.null(test$item_tests)) {
+        # Für jeden Item-Test einen Eintrag hinzufügen
+        for (item_name in names(test$item_tests)) {
+          item_test <- test$item_tests[[item_name]]
+          test_summary <- rbind(test_summary, data.frame(
+            Analyse = paste0(analysis_name, " [", item_name, "]"),
+            Variable_1 = result$variable_1,
+            Variable_2 = result$variable_2,
+            Test = item_test$test,
+            Statistik = if(!is.na(item_test$statistic)) as.character(item_test$statistic) else "-",
+            p_Wert = if(!is.na(item_test$p_value)) as.character(item_test$p_value) else "-",
+            Ergebnis = item_test$result,
+            stringsAsFactors = FALSE
+          ))
+        }
+      } else {
+        # Normaler Test
+        test_summary <- rbind(test_summary, data.frame(
+          Analyse = analysis_name,
+          Variable_1 = result$variable_1,
+          Variable_2 = result$variable_2,
+          Test = test$test,
+          Statistik = if(!is.na(test$statistic)) as.character(test$statistic) else "-",
+          p_Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-",
+          Ergebnis = test$result,
+          stringsAsFactors = FALSE
+        ))
+      }
     }
   }
   
@@ -6438,31 +6474,54 @@ export_statistical_tests <- function(wb, crosstab_results, header_style, table_s
         addStyle(wb, "Statistische_Tests", title_style, rows = current_row, cols = 1)
         current_row <- current_row + 1
         
-        # Test-Details als Tabelle - KORRIGIERT!
-        test_details <- data.frame(
-          Parameter = character(),
-          Wert = character(),
-          stringsAsFactors = FALSE
-        )
-        
-        # Basis-Parameter
-        test_details <- rbind(test_details, data.frame(Parameter = "Test", Wert = test$test))
-        test_details <- rbind(test_details, data.frame(Parameter = "Statistik", Wert = if(!is.na(test$statistic)) as.character(test$statistic) else "-"))
-        test_details <- rbind(test_details, data.frame(Parameter = "p-Wert", Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-"))
-        test_details <- rbind(test_details, data.frame(Parameter = "Ergebnis", Wert = test$result))
-        
-        # Freiheitsgrade nur wenn vorhanden
-        if ("df" %in% names(test) && !is.null(test$df) && length(test$df) == 1 && !is.na(test$df)) {
+        # Prüfen ob es sich um einen Matrix-Test handelt
+        if (!is.null(test$item_tests)) {
+          # Matrix-Kreuztabelle mit Tests pro Item
+          writeData(wb, "Statistische_Tests", "Matrix-Item Tests:", startRow = current_row)
+          current_row <- current_row + 1
           
-          test_details <- rbind(test_details, data.frame(Parameter = "Freiheitsgrade", Wert = as.character(test$df)))
+          # Tabellarische Übersicht der Matrix-Item Tests
+          matrix_test_summary <- data.frame(
+            Item = names(test$item_tests),
+            Test = sapply(test$item_tests, `[[`, "test"),
+            Statistik = sapply(test$item_tests, function(x) if(!is.na(x$statistic)) as.character(x$statistic) else "-"),
+            p_Wert = sapply(test$item_tests, function(x) if(!is.na(x$p_value)) as.character(x$p_value) else "-"),
+            Ergebnis = sapply(test$item_tests, `[[`, "result"),
+            stringsAsFactors = FALSE
+          )
+          
+          writeData(wb, "Statistische_Tests", matrix_test_summary, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Statistische_Tests", header_style, rows = current_row, cols = 1:5)
+          addStyle(wb, "Statistische_Tests", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(matrix_test_summary)), 
+                   cols = 1:5, gridExpand = TRUE)
+          current_row <- current_row + nrow(matrix_test_summary) + 2
+        } else {
+          # Normaler Kreuztabellen-Test
+          test_details <- data.frame(
+            Parameter = character(),
+            Wert = character(),
+            stringsAsFactors = FALSE
+          )
+          
+          # Basis-Parameter
+          test_details <- rbind(test_details, data.frame(Parameter = "Test", Wert = test$test))
+          test_details <- rbind(test_details, data.frame(Parameter = "Statistik", Wert = if(!is.na(test$statistic)) as.character(test$statistic) else "-"))
+          test_details <- rbind(test_details, data.frame(Parameter = "p-Wert", Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-"))
+          test_details <- rbind(test_details, data.frame(Parameter = "Ergebnis", Wert = test$result))
+          
+          # Freiheitsgrade nur wenn vorhanden
+          if ("df" %in% names(test) && !is.null(test$df) && length(test$df) == 1 && !is.na(test$df)) {
+            test_details <- rbind(test_details, data.frame(Parameter = "Freiheitsgrade", Wert = as.character(test$df)))
+          }
+          
+          writeData(wb, "Statistische_Tests", test_details, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Statistische_Tests", header_style, rows = current_row, cols = 1:2)
+          addStyle(wb, "Statistische_Tests", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(test_details)), 
+                   cols = 1:2, gridExpand = TRUE)
+          current_row <- current_row + nrow(test_details) + 2
         }
-        
-        writeData(wb, "Statistische_Tests", test_details, startRow = current_row, colNames = TRUE)
-        addStyle(wb, "Statistische_Tests", header_style, rows = current_row, cols = 1:2)
-        addStyle(wb, "Statistische_Tests", table_style, 
-                 rows = (current_row + 1):(current_row + nrow(test_details)), 
-                 cols = 1:2, gridExpand = TRUE)
-        current_row <- current_row + nrow(test_details) + 2
       }
     }
   } else {

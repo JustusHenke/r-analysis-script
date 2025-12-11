@@ -21,6 +21,7 @@ try(setwd(dirname(rstudioapi::getActiveDocumentContext()$path)))
 CONFIG_FILE <- "Analysis-Config.xlsx"
 DATA_FILE <- "PATHTO/DATAFILE.rds"  # oder .csv oder .xlsx
 OUTPUT_FILE <- "PATHTO/ANALYSISFILE.xlsx"
+LOG <- TRUE  # Logging aktivieren/deaktivieren
 
 SAVE_FINAL_DATASET <- TRUE  # oder FALSE
 FINAL_DATASET_FILE <- "PATHTO/ANALYZEDDATAFILE.rds"
