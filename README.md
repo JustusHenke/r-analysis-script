@@ -41,17 +41,17 @@ Die Datei `Analysis-Config.xlsx` enthält mehrere Arbeitsblätter:
 
 Definiert alle zu analysierenden Variablen:
 
-|| Spalte | Beschreibung | Beispiel |
-||--------|--------------|----------|
-|| `variable_name` | Exakter Variablenname im Datensatz | `SD01` |
-|| `question_text` | Beschreibung/Fragentext | "Geschlecht" |
-|| `data_type` | Datentyp (siehe unten) | `nominal_coded` |
-|| `coding` | Kodierung für Labels | `1=Weiblich;2=Männlich;3=Divers` |
-|| `min_value` | Minimum für numerische Vars | `1` |
-|| `max_value` | Maximum für numerische Vars | `5` |
-|| `reverse_coding` | Umkodierung (TRUE/FALSE) | `FALSE` |
-|| `use_NA` | Fehlende Werte einbeziehen | `FALSE` |
-|| `filter` | Filter-Bedingung (OPTIONAL) | `SD01==1` |
+| Feld | Beschreibung | Beispiel |
+| :--- | :--- | :--- |
+| `variable_name` | Exakter Variablenname im Datensatz | `SD01` |
+| `question_text` | Beschreibung/Fragentext | "Geschlecht" |
+| `data_type` | Datentyp (siehe unten) | `nominal_coded` |
+| `coding` | Kodierung für Labels | `1=Weiblich;2=Männlich;3=Divers` |
+| `min_value` | Minimum für numerische Vars | `1` |
+| `max_value` | Maximum für numerische Vars | `5` |
+| `reverse_coding` | Umkodierung (TRUE/FALSE) | `FALSE` |
+| `use_NA` | Fehlende Werte einbeziehen | `FALSE` |
+| `filter` | Filter-Bedingung (OPTIONAL) | `SD01==1` |
 
 #### Datentypen:
 - **`numeric`**: Kontinuierliche Zahlen (Alter, Noten)
@@ -70,13 +70,13 @@ Definiert alle zu analysierenden Variablen:
 
 Definiert Kreuztabellen zwischen Variablen:
 
-|| Spalte | Beschreibung | Beispiel |
-||--------|--------------|----------|
-|| `analysis_name` | Name der Analyse | "Geschlecht_x_Zufriedenheit" |
-|| `variable_1` | Erste Variable | `SD01` |
-|| `variable_2` | Zweite Variable | `GP01` |
-|| `statistical_test` | Test-Typ | `chi_square` |
-|| `filter` | Filter-Bedingung (OPTIONAL) | `SD01==1 & GP01>3` |
+| Feld | Beschreibung | Beispiel |
+| :--- | :--- | :--- |
+| `analysis_name` | Name der Analyse | "Geschlecht_x_Zufriedenheit" |
+| `variable_1` | Erste Variable | `SD01` |
+| `variable_2` | Zweite Variable | `GP01` |
+| `statistical_test` | Test-Typ | `chi_square` |
+| `filter` | Filter-Bedingung (OPTIONAL) | `SD01==1 & GP01>3` |
 
 #### Test-Typen:
 - **`chi_square`**: Chi-Quadrat-Test (kategorisch × kategorisch)
@@ -89,13 +89,13 @@ Definiert Kreuztabellen zwischen Variablen:
 
 Definiert Regressionsmodelle:
 
-|| Spalte | Beschreibung | Beispiel |
-||--------|--------------|----------|
-|| `regression_name` | Name des Modells | "Zufriedenheit_Modell" |
-|| `dependent_var` | Abhängige Variable | `zufriedenheit_index` |
-|| `independent_vars` | Unabhängige Variablen | `SD01;SD04;AS07` |
-|| `regression_type` | Modell-Typ | `linear` |
-|| `filter` | Filter-Bedingung (OPTIONAL) | `ALTER>=18` |
+| Feld | Beschreibung | Beispiel |
+| :--- | :--- | :--- |
+| `regression_name` | Name des Modells | "Zufriedenheit_Modell" |
+| `dependent_var` | Abhängige Variable | `zufriedenheit_index` |
+| `independent_vars` | Unabhängige Variablen | `SD01;SD04;AS07` |
+| `regression_type` | Modell-Typ | `linear` |
+| `filter` | Filter-Bedingung (OPTIONAL) | `ALTER>=18` |
 
 #### Regressions-Typen:
 - **`linear`**: Lineare Regression
@@ -111,14 +111,14 @@ Definiert Regressionsmodelle:
 
 Verarbeitet offene Textantworten:
 
-|| Spalte | Beschreibung | Beispiel |
-||--------|--------------|----------|
-|| `analysis_name` | Name der Analyse | "Verbesserungsvorschläge" |
-|| `text_variable` | Variable mit Textantworten | `GP05[other]` |
-|| `sort_variable` | Sortierung nach Variable | `SD01` |
-|| `min_length` | Mindest-Zeichenzahl | `3` |
-|| `include_empty` | Leere Antworten einschließen | `FALSE` |
-|| `filter` | Filter-Bedingung (OPTIONAL) | `!is.na(GP05)` |
+| Spalte | Beschreibung | Beispiel |
+|--------|--------------|----------|
+| `analysis_name` | Name der Analyse | "Verbesserungsvorschläge" |
+| `text_variable` | Variable mit Textantworten | `GP05[other]` |
+| `sort_variable` | Sortierung nach Variable | `SD01` |
+| `min_length` | Mindest-Zeichenzahl | `3` |
+| `include_empty` | Leere Antworten einschließen | `FALSE` |
+| `filter` | Filter-Bedingung (OPTIONAL) | `!is.na(GP05)` |
 
 ### Filter-Syntax
 
