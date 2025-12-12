@@ -125,8 +125,8 @@ Verarbeitet offene Textantworten:
 Für alle Excel-Sheets können Filter in der `filter`-Spalte definiert werden:
 
 - **Einfache Vergleiche**: `SD01==1`, `ALTER>=18`, `GP01<3`
-- **Textvergleiche**: `geschlecht==\"weiblich\"`, `bildung!=\"kein Abschluss\"`
-- **Logische Verknüpfungen**: `(SD01==1 & ALTER>=25) | SD03==\"hoch\"`
+- **Textvergleiche**: `geschlecht=="weiblich"`, `bildung!="kein Abschluss"`
+- **Logische Verknüpfungen**: `(SD01==1 & ALTER>=25) | SD03=="hoch"`
 - **Funktionen**: `!is.na(ZUFRIEDENHEIT) & ZUFRIEDENHEIT>3`
 - **Matrix-Variablen**: `ZS01.001.==1` oder `ZS01[001]==1`
 
