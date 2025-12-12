@@ -12,6 +12,7 @@
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
 # v1.3.0 (12.10.2025)
+#   • Matrix-Fragen erhalten nun auch statistische Tests 
 #   • Filter-Funktionalität: Individuelle Filter für Variablen & Analysen
 #   • Filter-Syntax: Einfache R/logische Ausdrücke (z.B. 'SD01==1')
 #   • Sicherer Parser: parse_filter_expression() mit Validation
