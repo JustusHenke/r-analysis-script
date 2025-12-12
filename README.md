@@ -294,7 +294,25 @@ Bei Problemen:
 
 ## Lizenz & Autor
 
-Survey Analysis Script  
+R Survey Analysis Script  
 Version: 1.3.0  
 Datum: 12.10.2025  
 Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf Excel-Konfiguration
+
+
+## Zitiervorschlag
+
+Henke, J. (2025). R Survey Analysis Script (Version 1.3.0) [Software]. 
+Institut für Hochschulforschung Halle-Wittenberg. https://github.com/JustusHenke/r-analysis-script
+
+```BibTex
+@software{Henke_QCA-AID_2025,
+  author       = {Henke, Justus},
+  title        = {{R Survey Analysis Script}},
+  month        = december,
+  year         = {2025},
+  publisher    = {Institut für Hochschulforschung Halle-Wittenberg},
+  version      = {1.3.0},
+  url          = {https://github.com/JustusHenke/r-analysis-script}
+}
+```
