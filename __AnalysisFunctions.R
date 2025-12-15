@@ -2073,8 +2073,8 @@ create_survey_object <- function(data, weight_var) {
     return(NULL)
   }
   
-  # Kopie der Daten für Survey-Objekt
-  survey_data <- data
+  # Konvertiere zu data.frame (nicht tibble) für Survey-Kompatibilität
+  survey_data <- as.data.frame(data)
   
   # ALLE FACTORS ZU CHARACTER konvertieren für Survey-Kompatibilität
   factor_vars <- sapply(survey_data, is.factor)
@@ -3951,8 +3951,11 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   if (!is.null(survey_obj) && WEIGHTS) {
     cat("Erstelle Survey-Objekt mit konvertierten Daten...\n")
     
+    # WICHTIG: Konvertiere zu data.frame vor Survey-Objekt-Erstellung
+    data_for_survey <- as.data.frame(data)
+    
     # WICHTIG: Survey-Objekt mit aktuellen (konvertierten) Daten erstellen
-    survey_obj <- create_survey_object(data, WEIGHT_VAR)
+    survey_obj <- create_survey_object(data_for_survey, WEIGHT_VAR)
     
     # Gefilterte Survey-Objekt für vollständige Fälle
     survey_complete <- subset(survey_obj, !is.na(get(numeric_var)) & !is.na(get(group_var)))
@@ -4235,7 +4238,7 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
         (is.factor(complete_data[[var2]]) && test_type %in% c("correlation", "t_test", "anova"))) {
       
       # Temporär zu character konvertieren für Survey-Operationen
-      temp_data <- complete_data
+      temp_data <- as.data.frame(complete_data)
       if (is.factor(temp_data[[var1]]) && test_type != "chi_square") {
         temp_data[[var1]] <- as.character(temp_data[[var1]])
       }
