@@ -3264,17 +3264,17 @@ create_matrix_crosstab <- function(data, matrix_var, group_var, survey_obj = NUL
   
   cat("Gefundene Matrix-Items:", length(matrix_vars), "\n")
   
-  # Vollständige Fälle für Matrix + Gruppe
-  all_vars_needed <- c(matrix_vars, group_var)
-  complete_cases <- complete.cases(data[, all_vars_needed])
-  complete_data <- data[complete_cases, ]
+  # PAIRWISE DELETION: Entferne nur Zeilen wo Gruppe fehlt (gemeinsame Bedingung)
+  # Für Matrix-Items wird pro Item einzeln gefiltert (pairwise)
+  complete_data <- data[!is.na(data[[group_var]]), ]
   
   if (nrow(complete_data) < 5) {
-    cat("WARNUNG: Zu wenige vollständige Fälle für Matrix-Kreuztabelle\n")
+    cat("WARNUNG: Zu wenige Fälle mit gültiger Gruppenvariable\n")
     return(NULL)
   }
   
-  cat("Vollständige Fälle:", nrow(complete_data), "\n")
+  cat("Fälle mit gültiger Gruppe:", nrow(complete_data), "\n")
+  cat("(Pairwise deletion: Für jedes Item werden verfügbare Fälle verwendet)\n")
   
   # Gruppe-Variable mit Labels erstellen
   group_display_var <- paste0(group_var, "_labeled")
@@ -3459,15 +3459,16 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
     item_label <- extract_item_label(data, var, actual_matrix_name)
     result_row <- data.frame(Item = item_label, stringsAsFactors = FALSE)
     
-    # Für jede Gruppe die Häufigkeiten berechnen
+    # Für jede Gruppe die Häufigkeiten berechnen (PAIRWISE DELETION)
     for (group in unique_groups) {
-      group_data <- data[data[[group_var]] == group & !is.na(data[[group_var]]), ]
+      # PAIRWISE: Filtere nach Gruppe UND Item-Wert (keine fehlenden Werte)
+      group_data <- data[data[[group_var]] == group & !is.na(data[[group_var]]) & !is.na(data[[var]]), ]
       
       if (nrow(group_data) > 0) {
         # *** GEÄNDERT: Gewichtete vs. ungewichtete Häufigkeiten ***
         if (!is.null(survey_obj) && WEIGHTS) {
-          # Gewichtete Häufigkeiten
-          group_survey <- subset(survey_obj_current, get(group_var) == group & !is.na(get(group_var)))
+          # Gewichtete Häufigkeiten - mit pairwise Filterung
+          group_survey <- subset(survey_obj_current, get(group_var) == group & !is.na(get(group_var)) & !is.na(get(var)))
           
           if (nrow(group_survey$variables) > 0) {
             freq_table <- svytable(as.formula(paste("~", var)), group_survey)
@@ -3480,7 +3481,7 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
             freq_df <- data.frame(response = character(), count = numeric(), stringsAsFactors = FALSE)
           }
         } else {
-          # Ungewichtete Häufigkeiten
+          # Ungewichtete Häufigkeiten (PAIRWISE: nur Zeilen mit Gruppe + Item-Wert)
           item_values <- group_data[[var]]
           freq_table <- table(item_values, useNA = "no")
           freq_df <- data.frame(
@@ -3588,9 +3589,10 @@ create_matrix_numeric_crosstab <- function(data, matrix_vars, group_var, unique_
     # Zeile für dieses Item
     result_row <- data.frame(Item = item_label, stringsAsFactors = FALSE)
     
-    # Für jede Gruppe Statistiken berechnen
+    # Für jede Gruppe Statistiken berechnen (PAIRWISE DELETION)
     for (group in unique_groups) {
-      group_indices <- data[[group_var]] == group & !is.na(data[[group_var]])
+      # PAIRWISE: Filtere nach Gruppe UND gültigen Item-Werten
+      group_indices <- data[[group_var]] == group & !is.na(data[[group_var]]) & !is.na(data[[var]])
       group_numeric <- numeric_values[group_indices]
       group_numeric <- group_numeric[!is.na(group_numeric)]
       
