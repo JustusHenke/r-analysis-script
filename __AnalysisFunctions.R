@@ -40,43 +40,65 @@
 # Globale Log-Verbindung
 log_connection <- NULL
 
-setup_logging <- function(log_file) {
-  "Startet das Logging mit dualer Ausgabe"
+setup_logging <- function(log_file = NULL) {
+  "Startet das Logging mit dualer Ausgabe (sink + file)"
+  
+  # Wenn keine Log-Datei angegeben, verwende OUTPUT_FILE mit Zeitstempel
+  if (is.null(log_file)) {
+    if (exists("OUTPUT_FILE")) {
+      output_dir <- dirname(OUTPUT_FILE)
+      if (output_dir == ".") {
+        output_dir <- getwd()
+      }
+      timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+      log_file <- file.path(output_dir, paste0("analysis_", timestamp, ".log"))
+    } else {
+      timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+      log_file <- paste0("analysis_", timestamp, ".log")
+    }
+  }
   
   # Verzeichnis erstellen falls nicht vorhanden
   dir.create(dirname(log_file), showWarnings = FALSE, recursive = TRUE)
   
-  # Log-Verbindung öffnen
+  # Öffne Log-Verbindung
   log_connection <<- file(log_file, open = "wt", encoding = "UTF-8")
+  
+  # Redirect Console-Ausgabe zu Log-Datei (split=TRUE = auch zu Console)
+  sink(log_file, append = TRUE, split = TRUE)
   
   cat("Logging gestartet:", log_file, "\n")
 }
 
-log_cat <- function(...) {
-  "Schreibt sowohl in Console als auch Log-Datei"
+close_logging <- function() {
+  "Schließt Logging (sink + file)"
   
-  # Text zusammenfügen
-  text <- paste(..., sep = "")
+  # Reset sink
+  sink()
   
-  # In Console ausgeben
-  cat(text)
-  
-  # In Log-Datei schreiben
+  # Schließe Log-Verbindung
   if (!is.null(log_connection)) {
-    writeLines(text, log_connection, sep = "")
-    flush(log_connection)
+    tryCatch({
+      close(log_connection)
+    }, error = function(e) {
+      base::cat("Warnung beim Schließen der Log-Datei:", e$message, "\n")
+    })
+    log_connection <<- NULL
   }
 }
 
-close_logging <- function() {
-  "Schließt Log-Datei"
+# Intelligente Ausgabefunktion: Schreibt zu cat() UND zu Log wenn aktiv
+cat_log <- function(...) {
+  "Schreibt zu Console und Log-Datei (falls aktiv)"
   
+  text <- paste(..., sep = "")
+  base::cat(text)
+  
+  # Schreibe auch zu Log wenn aktiv
   if (!is.null(log_connection)) {
-    close(log_connection)
-    log_connection <<- NULL
+    writeLines(text, log_connection)
+    flush(log_connection)
   }
-  
-  cat("Log-Datei geschlossen.\n")
 }
 
 # =============================================================================
@@ -6840,6 +6862,11 @@ main <- function() {
     custom_val_labels <- NULL
   }
   
+  # *** LOGGING SETUP ***
+  if (exists("LOG") && LOG == TRUE) {
+    setup_logging()  # Verwendet OUTPUT_FILE Verzeichnis + Zeitstempel
+  }
+  
   cat("=============================================================================\n")
   cat("SURVEY DATENAUSWERTUNG - START\n")
   cat("=============================================================================\n")
@@ -6944,4 +6971,12 @@ main <- function() {
   
   # *** FINALEN DATENSATZ SPEICHERN ***
   save_final_dataset(prepared_data$data, prepared_data$config)
+  
+  # *** LOGGING BEENDEN ***
+  if (exists("LOG") && LOG == TRUE) {
+    cat("\n=============================================================================\n")
+    cat("SURVEY DATENAUSWERTUNG - ABGESCHLOSSEN\n")
+    cat("=============================================================================\n")
+    close_logging()
+  }
 }
