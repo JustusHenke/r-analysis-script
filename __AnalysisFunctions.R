@@ -3970,14 +3970,21 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
       group_survey <- subset(survey_complete, get(group_var) == group)
       
       if (nrow(group_survey$variables) > 0) {
+        # Sichere Extraktion von svyquantile - konvertiere zu Vektor
+        median_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.5, na.rm = TRUE)
+        q1_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.25, na.rm = TRUE)
+        q3_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.75, na.rm = TRUE)
+        min_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0, na.rm = TRUE)
+        max_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 1, na.rm = TRUE)
+        
         stats_list[[as.character(group)]] <- list(
           n = nrow(group_survey$variables),
           mean = as.numeric(svymean(as.formula(paste("~", numeric_var)), group_survey, na.rm = TRUE)),
-          median = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.5, na.rm = TRUE)[[1]][1]),
-          q1 = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.25, na.rm = TRUE)[[1]][1]),
-          q3 = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.75, na.rm = TRUE)[[1]][1]),
-          min = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0, na.rm = TRUE)[[1]][1]),
-          max = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), group_survey, 1, na.rm = TRUE)[[1]][1]),
+          median = as.numeric(as.vector(median_result[[1]])[1]),
+          q1 = as.numeric(as.vector(q1_result[[1]])[1]),
+          q3 = as.numeric(as.vector(q3_result[[1]])[1]),
+          min = as.numeric(as.vector(min_result[[1]])[1]),
+          max = as.numeric(as.vector(max_result[[1]])[1]),
           sd = as.numeric(sqrt(svyvar(as.formula(paste("~", numeric_var)), group_survey, na.rm = TRUE)))
         )
       }
@@ -4039,14 +4046,21 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   
   # Gesamtstatistiken hinzufügen
   if (!is.null(survey_obj) && WEIGHTS) {
+    # Sichere Extraktion von svyquantile - konvertiere zu Vektor
+    total_median <- svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0.5, na.rm = TRUE)
+    total_q1 <- svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0.25, na.rm = TRUE)
+    total_q3 <- svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0.75, na.rm = TRUE)
+    total_min <- svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0, na.rm = TRUE)
+    total_max <- svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 1, na.rm = TRUE)
+    
     total_stats <- list(
       n = nrow(survey_complete$variables),
       mean = as.numeric(svymean(as.formula(paste("~", numeric_var)), survey_complete, na.rm = TRUE)),
-      median = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0.5, na.rm = TRUE)[[1]][1]),
-      q1 = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0.25, na.rm = TRUE)[[1]][1]),
-      q3 = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0.75, na.rm = TRUE)[[1]][1]),
-      min = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 0, na.rm = TRUE)[[1]][1]),
-      max = as.numeric(svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 1, na.rm = TRUE)[[1]][1]),
+      median = as.numeric(as.vector(total_median[[1]])[1]),
+      q1 = as.numeric(as.vector(total_q1[[1]])[1]),
+      q3 = as.numeric(as.vector(total_q3[[1]])[1]),
+      min = as.numeric(as.vector(total_min[[1]])[1]),
+      max = as.numeric(as.vector(total_max[[1]])[1]),
       sd = as.numeric(sqrt(svyvar(as.formula(paste("~", numeric_var)), survey_complete, na.rm = TRUE)))
     )
   } else {
