@@ -2,15 +2,24 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Version: 1.3.0
-# Datum: 12.10.2025, 13:45 UTC
-# Letzte Änderung: 51d1896 (Intelligent label truncation)
+# Version: 1.4.0
+# Datum: 16.12.2025, 15:30 UTC
+# Letzte Änderung: Matrix categorical table bugfixes
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
 #               und Regressionsanalysen
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.4.0 (16.12.2025) - BUGFIXES
+#   • FIX: Matrix categorical tables showing all zeros (IV02, ZS02, AS13a)
+#   • FIX: unique_responses collection after data normalization (AO01→1 mismatch)
+#   • FIX: Survey object recreation for weighted analysis after normalization
+#   • FIX: Enhanced label mapping for converted numeric values (Pattern 5)
+#   • FIX: Weighted numeric statistics in matrix tables (consistency with categorical)
+#   • ENHANCEMENT: Ordinal vs nominal AO-codes detection (IV02 vs SA07)
+#   • ENHANCEMENT: Haven_labelled mixed response conversion (ordinal + "Weiß nicht")
+# 
 # v1.3.0 (12.10.2025)
 #   • Matrix-Fragen erhalten nun auch statistische Tests 
 #   • Filter-Funktionalität: Individuelle Filter für Variablen & Analysen
@@ -142,7 +151,95 @@ load_packages <- function() {
 # HILFSFUNKTIONEN
 # =============================================================================
 
+# Globales Codebook für effiziente Label-Extraktion erstellen
+create_global_codebook <- function(data) {
+  "Erstellt ein globales Codebook für effiziente Label-Extraktion in allen Analysen"
+  
+  codebook_df <- data.frame(
+    Variable = names(data),
+    Label = sapply(data, function(x) {
+      label <- attr(x, "label")
+      if (is.null(label)) "" else as.character(label)
+    }),
+    Typ = sapply(data, function(x) paste(class(x), collapse = ", ")),
+    Wertelabels = sapply(data, function(x) {
+      labels <- attr(x, "labels")
+      if (!is.null(labels)) {
+        paste(names(labels), "=", labels, collapse = "; ")
+      } else {
+        "keine"
+      }
+    }),
+    stringsAsFactors = FALSE
+  )
+  
+  # Speichere Codebook global für Wiederverwendung in allen Analysen
+  assign("global_codebook", codebook_df, envir = .GlobalEnv)
+  cat("Globales Codebook erstellt für", nrow(codebook_df), "Variablen\n")
+  
+  return(invisible(codebook_df))
+}
 
+# Universelle Label-Extraktion für alle Analysetypen
+get_variable_label <- function(var_name, label_type = "full") {
+  "Extrahiert Variable-Labels aus dem globalen Codebook für alle Analysetypen
+  
+  Args:
+    var_name: Name der Variable
+    label_type: 'full' (ganzes Label), 'item' (nur Item-Teil aus Klammern), 'short' (gekürzt)
+  
+  Returns:
+    Extrahiertes Label oder Fallback-Label
+  "
+  
+  # Prüfe ob globales Codebook existiert
+  if (!exists("global_codebook", envir = .GlobalEnv)) {
+    return(var_name)  # Fallback: Variablenname
+  }
+  
+  codebook <- get("global_codebook", envir = .GlobalEnv)
+  
+  # Finde Variable im Codebook
+  if (!var_name %in% codebook$Variable) {
+    return(var_name)  # Fallback: Variablenname
+  }
+  
+  codebook_label <- codebook$Label[codebook$Variable == var_name]
+  
+  # Kein Label vorhanden
+  if (is.null(codebook_label) || codebook_label == "" || codebook_label == var_name) {
+    return(var_name)
+  }
+  
+  # Je nach label_type verschiedene Extraktion
+  if (label_type == "item") {
+    # Extrahiere nur Item-Teil aus eckigen Klammern (für Matrix-Items)
+    bracket_match <- regexpr("\\[([^\\]]+)\\]", codebook_label)
+    if (bracket_match > 0) {
+      bracket_start <- bracket_match[1] + 1
+      bracket_length <- attr(bracket_match, "match.length") - 2
+      item_label <- substr(codebook_label, bracket_start, bracket_start + bracket_length - 1)
+      
+      if (nchar(item_label) > 3 && item_label != var_name) {
+        return(item_label)
+      }
+    }
+    # Fallback zu full wenn keine Klammern
+    label_type <- "full"
+  }
+  
+  if (label_type == "short") {
+    # Gekürzte Version (max 80 Zeichen)
+    if (nchar(codebook_label) <= 80) {
+      return(codebook_label)
+    } else {
+      return(paste0(substr(codebook_label, 1, 77), "..."))
+    }
+  }
+  
+  # label_type == "full" oder Fallback
+  return(codebook_label)
+}
 
 # Funktion um zu prüfen ob Datei existiert
 check_file_exists <- function(filename) {
@@ -154,6 +251,217 @@ check_file_exists <- function(filename) {
 # Funktion um Dateiendung zu ermitteln
 get_file_extension <- function(filename) {
   tolower(tools::file_ext(filename))
+}
+
+# =============================================================================
+# CENTRALIZED VARIABLE TYPE DETECTION
+# =============================================================================
+
+detect_variable_type_advanced <- function(var_name, data, config = NULL) {
+  "Erweiterte Variablentyp-Erkennung basierend auf klaren Regeln für ordinal/numerisch/nominal"
+  
+  # Hole Variable aus Daten
+  if (!var_name %in% names(data)) {
+    return(list(type = "unknown", reason = "Variable nicht in Daten gefunden"))
+  }
+  
+  var_data <- data[[var_name]]
+  
+  # Hole Config-Informationen falls verfügbar
+  config_info <- list(
+    min_value = NA,
+    max_value = NA,
+    coding = NA,
+    has_range = FALSE
+  )
+  
+  if (!is.null(config) && "variablen" %in% names(config)) {
+    var_config <- config$variablen[config$variablen$variable_name == var_name, ]
+    if (nrow(var_config) > 0) {
+      config_info$min_value <- var_config$min_value[1]
+      config_info$max_value <- var_config$max_value[1]
+      config_info$coding <- var_config$coding[1]
+      config_info$has_range <- !is.na(config_info$min_value) && !is.na(config_info$max_value)
+    }
+  }
+  
+  # Hole Labels aus globalem Codebook
+  labels <- NULL
+  if (exists("global_codebook", envir = .GlobalEnv)) {
+    codebook <- get("global_codebook", envir = .GlobalEnv)
+    if (var_name %in% codebook$Variable) {
+      wertelabels <- codebook$Wertelabels[codebook$Variable == var_name]
+      if (!is.na(wertelabels) && wertelabels != "keine") {
+        # Parse Wertelabels (Format: "AO01 = Weiblich; AO02 = Männlich")
+        labels <- parse_coding(wertelabels)
+      }
+    }
+  }
+  
+  # Analysiere Datenwerte
+  # *** FIX: Handle haven_labelled data at the source ***
+  clean_var_data <- if (inherits(var_data, "haven_labelled")) {
+    as.character(var_data)
+  } else {
+    var_data
+  }
+  
+  unique_values <- unique(clean_var_data[!is.na(clean_var_data)])
+  unique_values <- unique_values[unique_values != ""]
+  n_unique <- length(unique_values)
+  
+  cat("🔍 Analysiere Variable:", var_name, "\n")
+  cat("   Eindeutige Werte:", n_unique, "->", paste(head(unique_values, 5), collapse = ", "), "\n")
+  cat("   Config Range:", config_info$has_range, "(", config_info$min_value, "-", config_info$max_value, ")\n")
+  cat("   Labels vorhanden:", !is.null(labels) && length(labels) > 0, "\n")
+  
+  # REGEL 1: ORDINAL - Min/Max definiert
+  if (config_info$has_range) {
+    cat("   ✅ ORDINAL: Min/Max Range definiert\n")
+    return(list(
+      type = "ordinal", 
+      reason = "Min/Max Range definiert",
+      allow_numeric = TRUE,
+      config_info = config_info,
+      labels = labels
+    ))
+  }
+  
+  # REGEL 2: ORDINAL - Ordinales Coding mit Zahlen und Beschreibung
+  if (!is.null(labels) && length(labels) > 0) {
+    # Prüfe ob Labels das Format "Zahl (Beschreibung)" haben
+    label_values <- as.character(labels)
+    ordinal_pattern_count <- sum(grepl("\\d+\\s*\\(.*\\)", label_values))
+    
+    if (ordinal_pattern_count >= 3) {  # Mindestens 3 ordinale Labels
+      cat("   ✅ ORDINAL: Ordinales Coding erkannt (", ordinal_pattern_count, "Labels mit Zahl+Beschreibung)\n")
+      return(list(
+        type = "ordinal",
+        reason = paste("Ordinales Coding mit", ordinal_pattern_count, "Zahl+Beschreibung Labels"),
+        allow_numeric = TRUE,
+        config_info = config_info,
+        labels = labels
+      ))
+    }
+  }
+  
+  # REGEL 3: NUMERISCH - Zahlen ohne führende Nullen, keine Labels, mindestens 6 Werte
+  if (is.null(labels) || length(labels) == 0) {
+    # *** FIX: Handle haven_labelled data properly ***
+    # Convert haven_labelled to character first, then try numeric conversion
+    char_values <- if (inherits(unique_values, "haven_labelled")) {
+      as.character(unique_values)
+    } else {
+      unique_values
+    }
+    
+    # Prüfe ob alle Werte numerisch sind (ohne führende Nullen)
+    numeric_values <- suppressWarnings(as.numeric(char_values))
+    all_numeric <- !any(is.na(numeric_values))
+    
+    # Prüfe auf führende Nullen (001, 002 etc.)
+    has_leading_zeros <- any(grepl("^0\\d+", char_values))
+    
+    if (all_numeric && !has_leading_zeros && n_unique >= 6) {
+      cat("   ✅ NUMERISCH: Zahlen ohne führende Nullen, keine Labels, >=6 Werte\n")
+      return(list(
+        type = "numeric",
+        reason = paste("Numerische Werte ohne Labels,", n_unique, "eindeutige Werte"),
+        allow_numeric = TRUE,
+        config_info = config_info,
+        labels = labels
+      ))
+    }
+  }
+  
+  # REGEL 4: NOMINAL - Alles andere (mit Labels, ohne Range, AO-Codes, etc.)
+  if (!is.null(labels) && length(labels) > 0) {
+    # Prüfe auf AO-Pattern oder andere nominale Codes
+    label_keys <- names(labels)
+    has_ao_pattern <- any(grepl("^AO\\d+$", label_keys))
+    has_numeric_codes <- any(grepl("^\\d+$", label_keys))
+    
+    reason_parts <- c()
+    if (has_ao_pattern) reason_parts <- c(reason_parts, "AO-Codes")
+    if (has_numeric_codes) reason_parts <- c(reason_parts, "numerische Codes")
+    if (length(labels) > 0) reason_parts <- c(reason_parts, paste(length(labels), "Labels"))
+    
+    cat("   ✅ NOMINAL: Labels vorhanden, keine Range (", paste(reason_parts, collapse = ", "), ")\n")
+    return(list(
+      type = "nominal",
+      reason = paste("Labels vorhanden, keine Range:", paste(reason_parts, collapse = ", ")),
+      allow_numeric = FALSE,
+      config_info = config_info,
+      labels = labels
+    ))
+  }
+  
+  # *** NEUE FALLBACK-REGELN FÜR CUSTOM VARIABLES OHNE CONFIG ***
+  # Prüfe ob alle Werte numerisch konvertierbar sind
+  if (is.null(labels) || length(labels) == 0) {
+    # *** FIX: Handle haven_labelled data properly ***
+    char_values_fallback <- if (inherits(unique_values, "haven_labelled")) {
+      as.character(unique_values)
+    } else {
+      unique_values
+    }
+    
+    numeric_values <- suppressWarnings(as.numeric(char_values_fallback))
+    all_numeric <- !any(is.na(numeric_values))
+    
+    if (all_numeric) {
+      # REGEL 5: DICHOTOM - Genau 2 numerische Werte (0,1 oder 1,2)
+      if (n_unique == 2) {
+        sorted_values <- sort(numeric_values)
+        if ((sorted_values[1] == 0 && sorted_values[2] == 1) || 
+            (sorted_values[1] == 1 && sorted_values[2] == 2) ||
+            (diff(sorted_values) == 1)) {  # Aufeinanderfolgende Zahlen
+          cat("   ✅ DICHOTOM: 2 numerische Werte (", paste(sorted_values, collapse = ", "), ") - Custom Variable\n")
+          return(list(
+            type = "dichotomous",
+            reason = paste("2 numerische Werte:", paste(sorted_values, collapse = ", ")),
+            allow_numeric = TRUE,
+            config_info = config_info,
+            labels = labels
+          ))
+        }
+      }
+      
+      # REGEL 6: NOMINAL - 3-15 numerische Werte ohne Labels
+      if (n_unique >= 3 && n_unique <= 15) {
+        cat("   ✅ NOMINAL: ", n_unique, " numerische Werte (3-15) - Custom Variable\n")
+        return(list(
+          type = "nominal",
+          reason = paste(n_unique, "numerische Werte (3-15 Bereich)"),
+          allow_numeric = FALSE,
+          config_info = config_info,
+          labels = labels
+        ))
+      }
+      
+      # REGEL 7: NUMERISCH - >15 numerische Werte
+      if (n_unique > 15) {
+        cat("   ✅ NUMERISCH: ", n_unique, " numerische Werte (>15) - Custom Variable\n")
+        return(list(
+          type = "numeric",
+          reason = paste(n_unique, "numerische Werte (>15)"),
+          allow_numeric = TRUE,
+          config_info = config_info,
+          labels = labels
+        ))
+      }
+    }
+  }
+  
+  # FALLBACK: Unbekannt (nur für wirklich unklare Fälle)
+  cat("   ❓ UNBEKANNT: Keine klare Klassifikation möglich (", n_unique, " Werte, nicht numerisch)\n")
+  return(list(
+    type = "unknown",
+    reason = paste("Keine klare Klassifikation möglich -", n_unique, "nicht-numerische Werte"),
+    allow_numeric = FALSE,
+    config_info = config_info,
+    labels = labels
+  ))
 }
 
 # =============================================================================
@@ -539,21 +847,16 @@ extract_numeric_from_matrix_coding <- function(data_values, coding_string, min_v
     return(as.numeric(data_values))
   }
   
-  # cat("DEBUG: Parsing coding:", coding_string, "\n")
   if (!is.na(min_value) && !is.na(max_value)) {
-    # cat("DEBUG: Gültiger Wertebereich:", min_value, "bis", max_value, "\n")
+    # Wertebereich definiert
   }
   
   # Parse coding - verbesserte Version für Matrix-Format
   labels <- parse_coding(coding_string)
   
   if (is.null(labels) || length(labels) == 0) {
-    # cat("DEBUG: Keine Labels gefunden, versuche direkte Konvertierung\n")
     return(as.numeric(data_values))
   }
-  
-  # cat("DEBUG: Gefundene Labels:", paste(names(labels), "=", labels, collapse = ", "), "\n")
-  # cat("DEBUG: Beispiel data_values:", paste(head(data_values, 10), collapse = ", "), "\n")
   # 
   # Konvertiere Werte basierend auf Kodierung
   numeric_values <- rep(NA, length(data_values))
@@ -572,12 +875,24 @@ extract_numeric_from_matrix_coding <- function(data_values, coding_string, min_v
         }
       }
       
-      # *** NEUE STRATEGIE 2: Suche nach AO-Pattern in Labels ***
+      # *** ENHANCED STRATEGIE 2: Extrahiere Zahlen aus Labels für AO-Pattern ***
       if (is.na(extracted_number) && current_value %in% names(labels)) {
-        # Extrahiere numerischen Code aus dem Key
-        ao_match <- gsub("^AO0*", "", current_value)
-        if (ao_match != "" && !is.na(suppressWarnings(as.numeric(ao_match)))) {
-          extracted_number <- as.numeric(ao_match)
+        label_text <- labels[current_value]
+        
+        # Prüfe ob Label mit Zahl beginnt (z.B. "1 (trifft überhaupt nicht zu)")
+        if (grepl("^\\d+", label_text)) {
+          number_from_label <- as.numeric(str_extract(label_text, "^\\d+"))
+          if (!is.na(number_from_label)) {
+            extracted_number <- number_from_label
+          }
+        }
+        
+        # Fallback: Extrahiere numerischen Code aus AO-Key (alte Logik)
+        if (is.na(extracted_number)) {
+          ao_match <- gsub("^AO0*", "", current_value)
+          if (ao_match != "" && !is.na(suppressWarnings(as.numeric(ao_match)))) {
+            extracted_number <- as.numeric(ao_match)
+          }
         }
       }
       
@@ -605,10 +920,8 @@ extract_numeric_from_matrix_coding <- function(data_values, coding_string, min_v
       # *** NEUE VALIDIERUNG: Prüfe min/max Bereich ***
       if (!is.na(extracted_number)) {
         if (!is.na(min_value) && extracted_number < min_value) {
-          cat("DEBUG: Wert", extracted_number, "unter Minimum", min_value, "-> auf NA gesetzt\n")
           extracted_number <- NA
         } else if (!is.na(max_value) && extracted_number > max_value) {
-          cat("DEBUG: Wert", extracted_number, "über Maximum", max_value, "-> auf NA gesetzt\n")
           extracted_number <- NA
         }
       }
@@ -619,7 +932,6 @@ extract_numeric_from_matrix_coding <- function(data_values, coding_string, min_v
   
   successful_conversions <- sum(!is.na(numeric_values))
   total_values <- length(data_values[!is.na(data_values)])
-  # cat("DEBUG: Erfolgreich konvertiert:", successful_conversions, "von", total_values, "Werten\n")
   
   return(numeric_values)
 }
@@ -730,139 +1042,344 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
   
   cat("💫 Verarbeite Matrix:", matrix_name, "\n")
   
-  # Finde alle Matrix-Items mit verschiedenen Trennern
-  matrix_patterns <- c(
-    paste0("^", matrix_name, "\\[.+\\]$"),     # Original: ZS01[001]
-    paste0("^", matrix_name, "\\..+\\.$"),     # Sanitized: ZS01.001.
-    paste0("^", matrix_name, "_.+$"),          # Underscore: ZS01_001
-    paste0("^", matrix_name, "-.+$")           # Dash: ZS01-001
-  )
+  # *** PHASE 2: Use shared matrix item detection ***
+  matrix_result <- find_matrix_items(matrix_name, data)
   
-  matrix_vars <- c()
-  for (pattern in matrix_patterns) {
-    found_vars <- names(data)[grepl(pattern, names(data))]
-    matrix_vars <- c(matrix_vars, found_vars)
-  }
-  
-  # FILTER OUT [other] variables
-  matrix_vars <- matrix_vars[!grepl("other", matrix_vars, ignore.case = TRUE)]
-  
-  # Duplikate entfernen und sortieren
-  matrix_vars <- unique(matrix_vars)
-  matrix_vars <- sort(matrix_vars)
-  
-  if (length(matrix_vars) == 0) {
+  if (!matrix_result$found) {
     cat("WARNUNG: Keine Matrix-Items gefunden für", matrix_name, "\n")
-    cat("Gesucht nach Mustern:", paste(matrix_patterns, collapse = ", "), "\n")
     cat("Verfügbare Variablen mit", matrix_name, ":", 
         paste(names(data)[grepl(matrix_name, names(data))], collapse = ", "), "\n")
-    
-    # Returniere NULL statt Fehler zu werfen
     return(NULL)
   }
+  
+  matrix_vars <- matrix_result$items
+  actual_matrix_name <- matrix_result$actual_name
   
   cat("Gefundene Matrix-Items:", length(matrix_vars), "\n")
   cat("Items:", paste(matrix_vars, collapse = ", "), "\n")
   
-  # SCHRITT 1: Alle möglichen Antwortkategorien sammeln
-  all_responses <- c()
-  for (var in matrix_vars) {
-    # IMMER die tatsächlichen Werte sammeln (unabhängig von Labels)
-    if (!use_na) {
-      var_responses <- unique(data[[var]][!is.na(data[[var]])])
-    } else {
-      var_responses <- unique(data[[var]])
-    }
-    all_responses <- c(all_responses, var_responses)
-  }
+  # *** OPTIMIERT: Einmalige Datentyp-Analyse und Normalisierung ***
+  cat("Analysiere und normalisiere Matrix-Items...\n")
   
-  # Eindeutige Kategorien ermitteln und sortieren
-  unique_responses <- unique(all_responses)
-  unique_responses <- unique_responses[!is.na(unique_responses)]
-  # NEUER FIX: Entferne leere Strings
-  unique_responses <- unique_responses[unique_responses != "" & !is.null(unique_responses)]
+  # *** PHASE 2: Use shared config extraction and security checks ***
+  matrix_config <- get_matrix_config(matrix_name, config = list(variablen = var_config))
   
-  # Sortierung: Versuche intelligente Sortierung für ordinale Daten
-  unique_responses <- sort_response_categories(unique_responses)
+  # *** REORDERED: Extract labels BEFORE security checks for enhanced AO-code detection ***
   
-  cat("Gefundene Antwortkategorien:", paste(unique_responses, collapse = ", "), "\n")
-  
-  # *** VEREINFACHTE LABEL-EXTRAKTION MIT NEUER HILFSFUNKTION ***
-  # Hole Labels mit zentraler Funktion (eliminiert Redundanz)
+  # SCHRITT 3: Label-Extraktion (vor Security Checks)
+  has_coding <- !is.na(var_config$coding) && var_config$coding != ""
   labels <- get_matrix_labels(data, matrix_vars, matrix_name, var_config, var_config$coding)
   
   if (!is.null(labels) && length(labels) > 0) {
     cat("Labels für Matrix-Responses gefunden:", length(labels), "Labels\n")
+    cat("Kodierung:", paste(names(labels), "=", labels, collapse = ", "), "\n")
   } else {
     cat("Keine Labels für Matrix-Responses gefunden\n")
   }
   
-  # Mappe Response-Werte auf Labels (zentralisierte Funktion)
-  response_labels <- map_response_labels(unique_responses, labels, verbose = TRUE)
-  
-  
-  
-  # Bestimme Matrix-Typ basierend auf Kodierung und Daten
-  has_coding <- !is.na(var_config$coding) && var_config$coding != ""
-  is_dichotomous_matrix <- FALSE
-  is_ordinal_matrix <- FALSE
-  is_numeric_matrix <- FALSE
-  
-  # Prüfe ob dichotome Matrix (nur "1" oder leer in Daten)
-  if (all(unique_responses %in% c("", "1")) || all(unique_responses %in% c("1"))) {
-    is_dichotomous_matrix <- TRUE
-    cat("Dichotome Matrix erkannt (nur '1' Werte)\n")
+  # Get sample values for security checks
+  sample_values <- c()
+  for (var in matrix_vars[1:min(3, length(matrix_vars))]) {
+    var_values <- data[[var]][!is.na(data[[var]])]
+    sample_values <- c(sample_values, head(var_values, 10))
   }
+  sample_values <- unique(sample_values)
   
-  # Prüfe ob ordinale Matrix (Kodierung vorhanden und nicht dichotom)
-  if (has_coding && !is_dichotomous_matrix) {
-    is_ordinal_matrix <- TRUE
-    cat("Ordinale Matrix erkannt (Kodierung vorhanden)\n")
-  }
+  # *** ENHANCED: Security checks with labels for ordinal AO-code detection ***
+  security_checks <- apply_matrix_security_checks(matrix_config, sample_values, labels)
   
-  # Prüfe ob numerische Matrix (keine Kodierung, numerische Werte)
-  if (!has_coding && !is_dichotomous_matrix) {
-    test_numeric <- suppressWarnings(as.numeric(unique_responses))
-    if (all(!is.na(test_numeric))) {
-      is_numeric_matrix <- TRUE
-      cat("Numerische Matrix erkannt (numerische Werte ohne Kodierung)\n")
+  # *** PHASE 2: Use security check results ***
+  allow_numeric_conversion <- security_checks$allow_numeric_conversion
+  has_range <- security_checks$has_range
+  has_coding <- security_checks$has_coding
+  is_ordinal_coding <- security_checks$is_ordinal_coding
+  
+  if (allow_numeric_conversion) {
+    if (has_range) {
+      cat("Min/Max Range definiert (", matrix_config$min_value, "-", matrix_config$max_value, ") -> numerische Konvertierung erlaubt\n")
     }
+    if (is_ordinal_coding) {
+      cat("Ordinale Kodierung erkannt -> numerische Konvertierung erlaubt\n")
+    }
+  } else {
+    cat("Keine Range/ordinale Kodierung -> nur haven_labelled/factor Konvertierung\n")
   }
   
-  # Numerische Statistiken
+  # SCHRITT 1: Analysiere Datentypen und sammle Kategorien in einem Durchgang
+  all_responses <- c()
+  needs_normalization <- FALSE
   
-  # Prüfe ob Kodierung verfügbar ist
-  if (!is.na(var_config$coding) && var_config$coding != "") {
-    # *** VEREINFACHTE LABEL-EXTRAKTION ***
-    labels <- get_matrix_labels(data, matrix_vars, matrix_name, var_config, var_config$coding)
+  for (var in matrix_vars) {
+    var_values <- data[[var]]
+    original_class <- class(var_values)[1]
     
-    if (!is.null(labels) && length(labels) > 0) {
-      cat("Kodierung gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
-    }
-    
-    # Erkenne dichotome Matrix (Y/N, 1/0, etc.)
-    if (!is.null(labels) && length(labels) <= 3) {  # Max 3 Kategorien für dichotom
-      label_keys <- names(labels)
-      label_values <- unique_responses  # Tatsächlich vorhandene Werte
+    # Prüfe ob Normalisierung nötig ist
+    if (inherits(var_values, "haven_labelled") || is.factor(var_values)) {
+      needs_normalization <- TRUE
+    } else if (is.character(var_values) && allow_numeric_conversion) {
+      # *** SICHERHEIT: Character-zu-numeric nur bei ordinalen/numerischen Hinweisen ***
+      sample_values <- var_values[!is.na(var_values) & var_values != ""][1:min(10, length(var_values[!is.na(var_values) & var_values != ""]))]
       
-      # Pattern 1: Y/N in Kodierung
-      if (any(c("Y", "N") %in% label_keys) || any(c("1", "0") %in% label_keys)) {
-        is_dichotomous_matrix <- TRUE
-        cat("Dichotome Matrix erkannt (Y/N Pattern in Kodierung)\n")
+      if (length(sample_values) > 0) {
+        # Prüfe AO-Pattern
+        if (all(grepl("^AO\\d+$", sample_values))) {
+          needs_normalization <- TRUE
+          cat("  ", var, ": AO-Pattern erkannt (ordinal/numerisch erlaubt) -> Konvertierung geplant\n")
+        } else {
+          # Standard numerische Konvertierung
+          numeric_test <- suppressWarnings(as.numeric(sample_values))
+          if (!all(is.na(numeric_test))) {
+            needs_normalization <- TRUE
+            cat("  ", var, ": Numerische Werte erkannt (ordinal/numerisch erlaubt) -> Konvertierung geplant\n")
+          }
+        }
       }
-      # Pattern 2: Nur "1" und leere Werte in Daten (typisch für Checkboxen)
-      else if (all(label_values %in% c("", "1")) || all(label_values %in% c("1"))) {
-        is_dichotomous_matrix <- TRUE
-        cat("Dichotome Matrix erkannt (1/leer Pattern in Daten)\n")
-      }
+    } else if (is.character(var_values) && !allow_numeric_conversion) {
+      cat("  ", var, ": Character-Werte, aber keine ordinalen/numerischen Hinweise -> bleibt character\n")
     }
     
-    # *** VEREINFACHTES LABEL-MAPPING ***
-    if (!is.null(labels) && length(labels) > 0) {
-      # Verwende zentralisierte Mapping-Funktion
-      response_labels <- map_response_labels(unique_responses, labels, verbose = FALSE)
+    # Sammle Kategorien (vor Normalisierung für korrekte Erkennung)
+    if (!use_na) {
+      var_responses <- unique(var_values[!is.na(var_values)])
+    } else {
+      var_responses <- unique(var_values)
+    }
+    all_responses <- c(all_responses, var_responses)
+  }
+  
+  # SCHRITT 2: Normalisierung nur wenn nötig
+  if (needs_normalization) {
+    cat("Datentyp-Normalisierung erforderlich...\n")
+    
+    for (var in matrix_vars) {
+      var_values <- data[[var]]
+      
+      # *** ENHANCED: Konvertiere haven_labelled mit sophistizierter Label-Extraktion ***
+      if (inherits(var_values, "haven_labelled")) {
+        if (allow_numeric_conversion) {
+          # Versuche zuerst einfache Konvertierung
+          simple_numeric <- tryCatch({
+            as.numeric(var_values)
+          }, error = function(e) NULL, warning = function(w) NULL)
+          
+          if (!is.null(simple_numeric) && !all(is.na(simple_numeric))) {
+            # Einfache Konvertierung erfolgreich
+            var_values <- simple_numeric
+            cat("  ", var, ": haven_labelled -> numeric (einfache Konvertierung)\n")
+          } else {
+            # Einfache Konvertierung fehlgeschlagen, verwende Label-basierte Extraktion
+            cat("  ", var, ": haven_labelled einfache Konvertierung fehlgeschlagen, verwende Label-Extraktion\n")
+            
+            # Konvertiere zu character und verwende dann matrix coding extraction
+            char_values <- as.character(var_values)
+            
+            if (!is.null(labels) && length(labels) > 0) {
+              # Verwende die sophistizierte Matrix-Kodierung-Extraktion
+              coding_string <- paste(names(labels), "=", labels, collapse = ";")
+              numeric_values <- extract_numeric_from_matrix_coding(
+                char_values, 
+                coding_string,
+                matrix_config$min_value,
+                matrix_config$max_value
+              )
+              
+              successful_conversions <- sum(!is.na(numeric_values))
+              total_values <- length(char_values[!is.na(char_values)])
+              
+              if (successful_conversions > 0) {
+                var_values <- numeric_values
+                cat("    ✅ Label-basierte Konvertierung:", successful_conversions, "von", total_values, "Werten\n")
+              } else {
+                # Fallback zu character
+                var_values <- char_values
+                cat("    ❌ Label-basierte Konvertierung fehlgeschlagen, bleibt character\n")
+              }
+            } else {
+              # Keine Labels verfügbar, fallback zu character
+              var_values <- char_values
+              cat("    ❌ Keine Labels für Konvertierung verfügbar, bleibt character\n")
+            }
+          }
+        } else {
+          # Für nominale Variablen: Behalte Labels als character
+          var_values <- as.character(var_values)
+          cat("  ", var, ": haven_labelled -> character (nominale Variable)\n")
+        }
+      }
+      # *** FIX: Konvertiere factor nur wenn numerische Konvertierung erlaubt ***
+      else if (is.factor(var_values)) {
+        var_values <- as.character(var_values)
+        if (allow_numeric_conversion) {
+          numeric_test <- suppressWarnings(as.numeric(var_values))
+          if (!all(is.na(numeric_test) | is.na(var_values))) {
+            var_values <- numeric_test
+            cat("  ", var, ": factor -> numeric (Konvertierung erlaubt)\n")
+          } else {
+            cat("  ", var, ": factor -> character (nicht numerisch konvertierbar)\n")
+          }
+        } else {
+          cat("  ", var, ": factor -> character (nominale Variable)\n")
+        }
+      }
+      # *** SICHERHEIT: Character-zu-numeric nur bei ordinalen/numerischen Hinweisen ***
+      else if (is.character(var_values) && allow_numeric_conversion) {
+        # Prüfe ob AO-Pattern vorliegt (AO01, AO05, etc.)
+        sample_values <- var_values[!is.na(var_values) & var_values != ""][1:min(5, length(var_values[!is.na(var_values) & var_values != ""]))]
+        
+        if (length(sample_values) > 0 && all(grepl("^AO\\d+$", sample_values))) {
+          # *** ENHANCED AO-Pattern: Use labels for conversion, not just AO-code stripping ***
+          cat("  ", var, ": AO-Pattern erkannt, verwende Labels für Konvertierung\n")
+          
+          # Use extract_numeric_from_matrix_coding with proper labels
+          if (!is.null(labels) && length(labels) > 0) {
+            # Use the sophisticated matrix coding extraction
+            ao_numeric <- extract_numeric_from_matrix_coding(
+              var_values, 
+              paste(names(labels), "=", labels, collapse = ";"),
+              matrix_config$min_value,
+              matrix_config$max_value
+            )
+            
+            successful_conversions <- sum(!is.na(ao_numeric))
+            total_values <- length(var_values[!is.na(var_values)])
+            
+            if (successful_conversions > 0) {
+              var_values <- ao_numeric
+              cat("    ✅ AO-Labels konvertiert:", successful_conversions, "von", total_values, "Werten\n")
+            } else {
+              cat("    ❌ AO-Label Konvertierung fehlgeschlagen\n")
+            }
+          } else {
+            # Fallback: Simple AO-code stripping (old method)
+            ao_numeric <- suppressWarnings(as.numeric(gsub("^AO0*", "", var_values)))
+            if (!all(is.na(ao_numeric) | is.na(var_values))) {
+              var_values <- ao_numeric
+              cat("    ✅ AO-Codes direkt konvertiert (Fallback)\n")
+            } else {
+              cat("    ❌ AO-Code Konvertierung fehlgeschlagen\n")
+            }
+          }
+        } else {
+          # Standard character-zu-numeric Konvertierung
+          numeric_test <- suppressWarnings(as.numeric(var_values))
+          if (!all(is.na(numeric_test) | is.na(var_values))) {
+            var_values <- numeric_test
+            cat("  ", var, ": character -> numeric (ordinal/numerisch erlaubt)\n")
+          } else {
+            cat("  ", var, ": bleibt character (nicht numerisch konvertierbar)\n")
+          }
+        }
+      }
+      else if (is.character(var_values) && !allow_numeric_conversion) {
+        cat("  ", var, ": character bleibt character (keine ordinalen/numerischen Hinweise)\n")
+      }
+      
+      # Aktualisiere im Datensatz
+      data[[var]] <- var_values
+    }
+    
+    # Nach Normalisierung: Kategorien neu sammeln
+    all_responses <- c()
+    for (var in matrix_vars) {
+      var_values <- data[[var]]
+      
+      if (!use_na) {
+        var_responses <- unique(var_values[!is.na(var_values)])
+      } else {
+        var_responses <- unique(var_values)
+      }
+      all_responses <- c(all_responses, var_responses)
+    }
+  } else {
+    cat("Keine Datentyp-Normalisierung erforderlich\n")
+  }
+  
+  # *** FIX: IMMER Kategorien nach potentieller Normalisierung neu sammeln ***
+  # Dies stellt sicher, dass unique_responses die tatsächlichen Datenwerte widerspiegelt
+  all_responses_final <- c()
+  for (var in matrix_vars) {
+    var_values <- data[[var]]
+    
+    if (!use_na) {
+      var_responses <- unique(var_values[!is.na(var_values)])
+    } else {
+      var_responses <- unique(var_values)
+    }
+    all_responses_final <- c(all_responses_final, var_responses)
+  }
+  
+  # Eindeutige Kategorien ermitteln und sortieren
+  unique_responses <- unique(all_responses_final)
+  unique_responses <- unique_responses[!is.na(unique_responses)]
+  # NEUER FIX: Entferne leere Strings
+  unique_responses <- unique_responses[unique_responses != "" & !is.null(unique_responses)]
+  
+  # Data normalization completed - unique responses updated
+  
+  # *** CRITICAL FIX: Survey-Objekt nach Datentyp-Normalisierung neu erstellen ***
+  # Das ursprüngliche survey_obj enthält die unnormalisierten Daten (AO01, AO02, etc.)
+  # Nach der Normalisierung enthalten die Daten aber numerische Werte (1, 2, 3, etc.)
+  # Dies führt zu einem Mismatch bei svytable() -> alle Häufigkeiten = 0
+  if (!is.null(survey_obj) && WEIGHTS) {
+    cat("🔄 Survey-Objekt wird nach Datentyp-Normalisierung neu erstellt...\n")
+    
+    # Prüfe ob WEIGHT_VAR existiert
+    if (exists("WEIGHT_VAR") && WEIGHT_VAR %in% names(data)) {
+      survey_obj <- create_survey_object(data, WEIGHT_VAR)
+      cat("✅ Survey-Objekt erfolgreich mit normalisierten Daten neu erstellt\n")
+    } else {
+      cat("⚠️  WEIGHT_VAR nicht verfügbar - Survey-Objekt bleibt unverändert\n")
     }
   }
+  
+  # *** NEUER FIX: Filtere Werte basierend auf min/max (falls definiert) ***
+  min_val <- var_config$min_value
+  max_val <- var_config$max_value
+  has_range <- !is.na(min_val) && !is.na(max_val)
+  
+  if (has_range) {
+    cat("Matrix mit definiertem Wertebereich erkannt: ", min_val, " bis ", max_val, "\n")
+    
+    # *** SICHERHEIT: Nur numerische Verarbeitung wenn unique_responses numerisch sind ***
+    if (is.numeric(unique_responses)) {
+      # *** FIX: Für kategoriale Tabelle ALLE Werte behalten, für numerische nur Bereich ***
+      # Sammle Werte im definierten Bereich
+      valid_responses <- unique_responses[unique_responses >= min_val & unique_responses <= max_val]
+      
+      # Sammle Werte außerhalb des Bereichs (z.B. "6" = Weiß nicht)
+      outside_responses <- unique_responses[unique_responses < min_val | unique_responses > max_val]
+      
+      # Füge fehlende Werte im Bereich hinzu (für konsistente Tabellen)
+      full_range <- min_val:max_val
+      
+      # Für kategoriale Tabelle: Verwende ALLE Werte (Bereich + Außerhalb)
+      unique_responses <- sort(unique(c(valid_responses, full_range, outside_responses)))
+      
+      cat("Kategorien für kategoriale Tabelle: ", paste(unique_responses, collapse = ", "), "\n")
+      cat("Numerischer Wertebereich: ", min_val, " bis ", max_val, "\n")
+    } else {
+      cat("WARNUNG: Range definiert, aber unique_responses sind nicht numerisch -> verwende character-Sortierung\n")
+      unique_responses <- sort_response_categories(unique_responses)
+    }
+  } else {
+    # Sortierung: Versuche intelligente Sortierung für ordinale Daten
+    unique_responses <- sort_response_categories(unique_responses)
+  }
+  
+  cat("Gefundene Antwortkategorien:", paste(unique_responses, collapse = ", "), "\n")
+  
+  # *** Labels already extracted above before security checks ***
+  
+  # *** PHASE 2: Use unified matrix type detection ***
+  matrix_type_info <- determine_matrix_type_unified(unique_responses, labels, security_checks)
+  is_dichotomous_matrix <- matrix_type_info$is_dichotomous
+  is_ordinal_matrix <- matrix_type_info$is_ordinal
+  is_numeric_matrix <- matrix_type_info$is_numeric
+  
+  cat("Matrix-Typ:", matrix_type_info$type, "\n")
+  
+  # SCHRITT 5: Response-Label-Mapping (nur einmal)
+  response_labels <- map_response_labels(unique_responses, labels, verbose = FALSE)
   # *** ENDE NEUER CODE ***
   
   # SCHRITT 2: Dynamische Spalten für alle Kategorien erstellen
@@ -872,8 +1389,14 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
   if (is_dichotomous_matrix) {
     cat("Erstelle kategoriale Tabelle für dichotome Matrix\n")
     
-    # WICHTIG: Verwende ALLE Fälle für Gesamtzahl, nicht nur gefilterte
-    total_n <- nrow(data)  # Gesamtstichprobe statt gefilterte Daten
+    # *** FIX: Use weighted totals when survey object is available ***
+    if (!is.null(survey_obj) && WEIGHTS) {
+      total_n <- sum(weights(survey_obj))  # Weighted total
+      cat("Verwende gewichtete Häufigkeiten für dichotome Matrix (N =", round(total_n, 1), ")\n")
+    } else {
+      total_n <- nrow(data)  # Unweighted total
+      cat("Verwende ungewichtete Häufigkeiten für dichotome Matrix (N =", total_n, ")\n")
+    }
     
     for (var in matrix_vars) {
       # Label extrahieren - VERWENDE GLEICHE LOGIK WIE BEI ORDINALEN MATRIX
@@ -894,25 +1417,61 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         }
       }
       
-      cat("Variable:", var, "-> Label:", item_label, "\n")
-      
-      # Für dichotome Matrix: Zähle 1en und 0en/leere GEGEN GESAMTSTICHPROBE
+      # Für dichotome Matrix: Zähle Ja-Werte (1 oder Y) und Nein/leere GEGEN GESAMTSTICHPROBE
       var_data <- data[[var]]
       
-      # Zähle explizit
-      count_1 <- sum(var_data == "1", na.rm = TRUE)
-      count_0_or_empty <- total_n - count_1  # Alle anderen sind "nicht ausgewählt"
+      # *** FIX: Use weighted or unweighted counts based on survey object ***
+      if (!is.null(survey_obj) && WEIGHTS) {
+        # Weighted counts using survey object
+        tryCatch({
+          if (matrix_type_info$type == "dichotomous (Y/N data pattern)") {
+            # Y/N Pattern: Calculate weighted count of Y values
+            y_indicator <- ifelse(var_data == "Y", 1, 0)
+            y_indicator[is.na(y_indicator)] <- 0
+            count_yes <- sum(y_indicator * weights(survey_obj), na.rm = TRUE)
+          } else {
+            # 1/0 Pattern: Calculate weighted count of 1 values
+            one_indicator <- ifelse(var_data == "1", 1, 0)
+            one_indicator[is.na(one_indicator)] <- 0
+            count_yes <- sum(one_indicator * weights(survey_obj), na.rm = TRUE)
+          }
+          count_no_or_empty <- total_n - count_yes
+          cat("  Gewichtete Counts für", var, ": Ja =", round(count_yes, 1), ", Nein/leer =", round(count_no_or_empty, 1), "\n")
+        }, error = function(e) {
+          cat("  ⚠️  Gewichtete Berechnung fehlgeschlagen für", var, ":", e$message, "\n")
+          # Fallback to unweighted
+          if (matrix_type_info$type == "dichotomous (Y/N data pattern)") {
+            count_yes <- sum(var_data == "Y", na.rm = TRUE)
+          } else {
+            count_yes <- sum(var_data == "1", na.rm = TRUE)
+          }
+          count_no_or_empty <- nrow(data) - count_yes
+          total_n <- nrow(data)
+        })
+      } else {
+        # Unweighted counts (original logic)
+        if (matrix_type_info$type == "dichotomous (Y/N data pattern)") {
+          # Y/N Pattern: Zähle Y als "ausgewählt"
+          count_yes <- sum(var_data == "Y", na.rm = TRUE)
+          count_no_or_empty <- total_n - count_yes  # Alle anderen sind "nicht ausgewählt"
+          cat("  Ungewichtete Counts für", var, ": Y =", count_yes, ", N/leer =", count_no_or_empty, "\n")
+        } else {
+          # 1/0 Pattern: Zähle 1 als "ausgewählt"
+          count_yes <- sum(var_data == "1", na.rm = TRUE)
+          count_no_or_empty <- total_n - count_yes  # Alle anderen sind "nicht ausgewählt"
+          cat("  Ungewichtete Counts für", var, ": 1er =", count_yes, ", 0/leer =", count_no_or_empty, "\n")
+        }
+      }
       
-      cat("  Counts für", var, ": 1er =", count_1, ", 0/leer =", count_0_or_empty, ", total =", total_n, "\n")
       
-      # Ergebnis-Zeile für dichotome Matrix (KORRIGIERT)
+      # *** FIX: Ergebnis-Zeile für dichotome Matrix mit expliziten Datentypen ***
       result_row <- data.frame(
-        Item = item_label,
-        Ausgewählt_absolut = count_1,
-        Nicht_ausgewählt_absolut = count_0_or_empty,
-        Ausgewählt_prozent = round(count_1 / total_n * 100, DIGITS_ROUND),
-        Nicht_ausgewählt_prozent = round(count_0_or_empty / total_n * 100, DIGITS_ROUND),
-        Gesamt = total_n,
+        Item = as.character(item_label),
+        Ausgewählt_absolut = as.numeric(count_yes),
+        Nicht_ausgewählt_absolut = as.numeric(count_no_or_empty),
+        Ausgewählt_prozent = as.numeric(round(count_yes / total_n * 100, DIGITS_ROUND)),
+        Nicht_ausgewählt_prozent = as.numeric(round(count_no_or_empty / total_n * 100, DIGITS_ROUND)),
+        Gesamt = as.numeric(total_n),
         stringsAsFactors = FALSE
       )
       
@@ -924,11 +1483,12 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     for (var in matrix_vars) {
       # Label extrahieren
       item_label <- extract_item_label(data, var, matrix_name)
-      cat("Variable:", var, "-> Label:", item_label, "\n")
       
-      # Daten für dieses Item filtern
+      # Daten für dieses Item filtern (Datentyp-Normalisierung bereits erfolgt)
+      var_values <- data[[var]]
+      
       if (!use_na) {
-        item_data <- data[!is.na(data[[var]]), ]
+        item_data <- data[!is.na(var_values), ]
       } else {
         item_data <- data
       }
@@ -961,16 +1521,22 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       # Gesamtzahl für Prozente
       total_count <- sum(freq_df$count)
       
-      # Ergebnis-Zeile initialisieren
-      result_row <- data.frame(Item = item_label, stringsAsFactors = FALSE)
+      # *** FIX: Ergebnis-Zeile mit expliziten Datentypen initialisieren ***
+      result_row <- data.frame(
+        Item = as.character(item_label), 
+        stringsAsFactors = FALSE
+      )
       
       # SCHRITT 1: Erst alle absoluten Werte sammeln
       absolut_values <- list()
       prozent_values <- list()
       
       for (response in unique_responses) {
+        # *** SICHERHEIT: Konvertiere response zu character für Vergleich ***
+        response_char <- as.character(response)
+        
         # *** SICHER: Extrahiere COUNT mit which() um Duplikate zu handlen ***
-        matching_idx <- which(freq_df$response == response)
+        matching_idx <- which(freq_df$response == response_char)
         
         if (length(matching_idx) == 0) {
           count <- 0
@@ -986,7 +1552,6 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         percent <- if (total_count > 0) round(count / total_count * 100, DIGITS_ROUND) else 0
         
         # *** SICHERERE INDEXIERUNG: Verwende which() oder [1] um sicherzustellen, dass genau 1 Wert zurückkommt ***
-        response_char <- as.character(response)
         response_label <- NA_character_
         
         # Versuche direkten Match in response_labels names
@@ -1000,19 +1565,19 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         
         clean_response <- make_clean_colname(response_label)
         
-        # Werte sammeln statt direkt zuweisen
-        absolut_values[[paste0(clean_response, "_absolut")]] <- count
-        prozent_values[[paste0(clean_response, "_prozent")]] <- percent
+        # *** FIX: Stelle sicher, dass alle Werte numerisch sind ***
+        absolut_values[[paste0(clean_response, "_absolut")]] <- as.numeric(count)
+        prozent_values[[paste0(clean_response, "_prozent")]] <- as.numeric(percent)
       }
       
       # SCHRITT 2: Erst alle absoluten Spalten hinzufügen
       for (col_name in names(absolut_values)) {
-        result_row[[col_name]] <- absolut_values[[col_name]]
+        result_row[[col_name]] <- absolut_values[[col_name]]  # Bereits numeric
       }
       
       # SCHRITT 3: Dann alle Prozent-Spalten hinzufügen  
       for (col_name in names(prozent_values)) {
-        result_row[[col_name]] <- prozent_values[[col_name]]
+        result_row[[col_name]] <- prozent_values[[col_name]]  # Bereits numeric
       }
       
       # N/A Spalten hinzufügen wenn use_na = TRUE
@@ -1021,11 +1586,11 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         if (length(na_count) == 0) na_count <- 0
         na_percent <- if (total_count > 0) round(na_count / total_count * 100, DIGITS_ROUND) else 0
         
-        result_row$NA_absolut <- na_count
-        result_row$NA_prozent <- na_percent
+        result_row$NA_absolut <- as.numeric(na_count)
+        result_row$NA_prozent <- as.numeric(na_percent)
       }
       
-      result_row$Gesamt <- total_count
+      result_row$Gesamt <- as.numeric(total_count)
       
       result_rows[[var]] <- result_row
       cat("    ✓ Zeile hinzugefügt für", var, "- Spalten:", ncol(result_row), "\n")
@@ -1038,51 +1603,65 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     cat("WARNUNG: Keine Zeilen für kategoriale Tabelle erstellt!\n")
     result_table <- data.frame()  # Leere Tabelle
   } else {
-    result_table <- do.call(rbind, result_rows)
+    # *** EINFACHER FIX: Verwende bind_rows ohne Harmonisierung ***
+    result_table <- tryCatch({
+      # Versuche bind_rows (aus dplyr) - das sollte Datentyp-Konflikte automatisch lösen
+      if (requireNamespace("dplyr", quietly = TRUE)) {
+        dplyr::bind_rows(result_rows)
+      } else {
+        # Fallback: do.call rbind mit stringsAsFactors=FALSE
+        do.call("rbind", c(result_rows, list(stringsAsFactors = FALSE)))
+      }
+    }, error = function(e) {
+      cat("WARNUNG: bind_rows fehlgeschlagen bei kategoriale Tabelle\n")
+      cat("Fehler:", e$message, "\n")
+      
+      # Fallback: Harmonisiere nur die Spalten, nicht die Datentypen
+      all_colnames <- unique(unlist(lapply(result_rows, names)))
+      
+      harmonized_rows <- lapply(result_rows, function(df) {
+        # Füge fehlende Spalten mit NA hinzu
+        missing_cols <- setdiff(all_colnames, names(df))
+        for (col in missing_cols) {
+          if (col == "Item") {
+            df[[col]] <- NA_character_
+          } else {
+            df[[col]] <- NA_real_
+          }
+        }
+        # Sortiere Spalten in einheitlicher Reihenfolge
+        df <- df[all_colnames]
+        return(df)
+      })
+      
+      # Versuche nochmal bind_rows
+      tryCatch({
+        dplyr::bind_rows(harmonized_rows)
+      }, error = function(e2) {
+        # Letzter Fallback: Alles zu character
+        cat("WARNUNG: Auch harmonisiertes bind_rows fehlgeschlagen, verwende character-Fallback\n")
+        char_dfs <- lapply(harmonized_rows, function(x) {
+          data.frame(lapply(x, as.character), stringsAsFactors = FALSE)
+        })
+        do.call("rbind", char_dfs)
+      })
+    })
+    
     rownames(result_table) <- NULL
   }
   
   # PRÜFE OB KODIERUNG VORHANDEN IST (ordinal behandeln) ODER DICHOTOM ERKANNT
   has_coding <- !is.na(var_config$coding) && var_config$coding != ""
   
-  # NEUE LOGIK: Erkenne ordinale Matrix basierend auf Kodierung
-  is_ordinal_matrix <- FALSE
-  if (has_coding) {
-    labels <- parse_coding(var_config$coding)  
-    if (!is.null(labels) && length(labels) > 2) {
-      # Prüfe ob Labels numerische Codes haben (ordinal)
-      numeric_codes <- suppressWarnings(as.numeric(names(labels)))
-      if (!any(is.na(numeric_codes)) && length(unique(numeric_codes)) > 2) {
-        is_ordinal_matrix <- TRUE
-        cat("Ordinale Matrix erkannt basierend auf numerischen Codes in Kodierung\n")
-      }
-    }
-  }
+  # *** REMOVED: Duplicate logic that conflicts with unified matrix type detection ***
+  # The unified detection (determine_matrix_type_unified) already correctly sets these flags
   
-  # AUTOMATISCHE ERKENNUNG: Prüfe ob die tatsächlichen Werte numerisch sind
-  is_numeric_matrix <- FALSE
-  if (!has_coding && !is_dichotomous_matrix && !is_ordinal_matrix) {
-    # Sammle Stichprobe von Werten aus allen Matrix-Items
-    sample_values <- c()
-    for (var in matrix_vars[1:min(3, length(matrix_vars))]) {  # Prüfe max. 3 Items
-      var_values <- data[[var]][!is.na(data[[var]]) & data[[var]] != ""]
-      sample_values <- c(sample_values, as.character(var_values[1:min(20, length(var_values))]))
-    }
-    
-    # Prüfe ob die Werte numerisch konvertierbar sind
-    numeric_test <- suppressWarnings(as.numeric(sample_values))
-    proportion_numeric <- sum(!is.na(numeric_test)) / length(numeric_test)
-    
-    # Wenn > 80% der Werte numerisch sind, behandle als numerische Matrix
-    if (proportion_numeric > 0.8 && length(unique(numeric_test[!is.na(numeric_test)])) > 2) {
-      is_numeric_matrix <- TRUE
-      cat("Numerische Matrix automatisch erkannt (", round(proportion_numeric * 100, 1), 
-          "% numerische Werte)\n", sep = "")
-    }
-  }
+  # *** REMOVED: Duplicate numeric matrix detection logic ***
+  # The unified detection (determine_matrix_type_unified) already handles this correctly
   
-  if (has_coding || is_dichotomous_matrix || is_ordinal_matrix || is_numeric_matrix) {
-    cat("Matrix hat Kodierung oder ist dichotom - erstelle zusätzliche numerische Statistiken\n")
+  # *** FIX: Nur numerische Statistiken wenn explizit erlaubt UND Matrix ordinal/dichotom/numerisch ***
+  if (allow_numeric_conversion && (is_dichotomous_matrix || is_ordinal_matrix || is_numeric_matrix)) {
+    cat("Matrix hat ordinale/numerische Eigenschaften UND Konvertierung erlaubt - erstelle zusätzliche numerische Statistiken\n")
     
     # Erstelle numerische Statistik-Tabelle
     numeric_stats_rows <- list()
@@ -1090,52 +1669,66 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     for (var in matrix_vars) {
       item_label <- extract_item_label(data, var, matrix_name)
       
-      # Daten für dieses Item
-      if (!use_na) {
-        item_data <- data[!is.na(data[[var]]), ]
-        item_values <- item_data[[var]]
-      } else {
-        item_values <- data[[var]]
-      }
+      # *** FIX: Initialize stats_row to prevent "object not found" errors ***
+      stats_row <- NULL
       
-      # NEUE LOGIK: Unterscheide zwischen dichotom und ordinal basierend auf Kodierung
-      if (is.na(var_config$coding) || var_config$coding == "") {  
-        # Keine Kodierung - verwende Rohwerte (funktioniert jetzt auch für automatisch erkannte numerische Matrizen)
-        numeric_values <- suppressWarnings(as.numeric(as.character(item_values)))
-        if (is_numeric_matrix) {
-          cat("  Automatische numerische Konvertierung für", var, "\n")
-        }
+      # Daten für numerische Statistiken (Datentyp-Normalisierung bereits erfolgt)
+      var_values <- data[[var]]
+      
+      # Für numerische Statistiken: Behandle Werte außerhalb des Bereichs als Missing
+      if (has_range && is.numeric(var_values)) {
+        numeric_values <- ifelse(!is.na(var_values) & 
+                                var_values >= min_val & 
+                                var_values <= max_val, 
+                                var_values, NA)
+        cat("  Numerischer Wertebereich-Filter angewendet für", var, " (", min_val, "-", max_val, "): ", 
+            sum(!is.na(numeric_values)), " gültige von ", length(var_values), " Werten\n")
+      } else if (is.numeric(var_values)) {
+        numeric_values <- var_values
+        cat("  Numerische Werte verwendet für", var, "\n")
       } else {
-        # Kodierung vorhanden - prüfe Typ
-        labels <- parse_coding(var_config$coding)
+        # Ursprüngliche Logik für nicht-haven_labelled Daten
+        item_values <- as.character(var_values)
         
-        if (!is.null(labels) && length(labels) <= 2) {
-          # BINÄRE MATRIX: Leere Werte zu 0, "1"/Y zu 1, andere zu 0
-          cat("  Binäre Matrix-Konvertierung für", var, "\n")
-          numeric_values <- rep(0, nrow(data))  # Default: 0 für ALLE Zeilen
-          
-          # Bearbeite ALLE Zeilen im Original-Datensatz
-          for (i in seq_len(nrow(data))) {
-            val <- data[[var]][i] 
-            if (!is.na(val) && val != "") {
-              if (val %in% c("Y", "1")) {
-                numeric_values[i] <- 1
-              }
-              # Andere Werte bleiben 0
-            }
+        # NEUE LOGIK: Unterscheide zwischen dichotom und ordinal basierend auf Kodierung
+        if (is.na(var_config$coding) || var_config$coding == "") {  
+          # Keine Kodierung - verwende Rohwerte (funktioniert jetzt auch für automatisch erkannte numerische Matrizen)
+          numeric_values <- suppressWarnings(as.numeric(item_values))
+          if (is_numeric_matrix) {
+            cat("  Automatische numerische Konvertierung für", var, "\n")
           }
-          
-          cat("    Binäre Werte:", sum(numeric_values == 1), "von", length(numeric_values), "= 1\n")
-          
         } else {
-          # ORDINALE MATRIX: Verwende bestehende Kodierungs-Extraktion
-          cat("  Ordinale Matrix-Konvertierung für", var, "\n")
-          numeric_values <- extract_numeric_from_matrix_coding(
-            item_values, 
-            var_config$coding, 
-            var_config$min_value,  
-            var_config$max_value  
-          )
+          # Kodierung vorhanden - prüfe Typ
+          labels <- parse_coding(var_config$coding)
+          
+          if (!is.null(labels) && length(labels) <= 2) {
+            # BINÄRE MATRIX: Leere Werte zu 0, "1"/Y zu 1, andere zu 0
+            cat("  Binäre Matrix-Konvertierung für", var, "\n")
+            numeric_values <- rep(0, nrow(data))  # Default: 0 für ALLE Zeilen
+            
+            # Bearbeite ALLE Zeilen im Original-Datensatz
+            for (i in seq_len(nrow(data))) {
+              val <- data[[var]][i] 
+              if (!is.na(val) && val != "") {
+                if (val %in% c("Y", "1")) {
+                  numeric_values[i] <- 1
+                }
+                # Andere Werte bleiben 0
+              }
+            }
+            
+            cat("    Binäre Werte:", sum(numeric_values == 1), "von", length(numeric_values), "= 1\n")
+            
+          } else {
+            # ORDINALE MATRIX: Verwende bestehende Kodierungs-Extraktion
+            cat("  Ordinale Matrix-Konvertierung für", var, "\n")
+            numeric_values <- extract_numeric_from_matrix_coding(
+              item_values, 
+              var_config$coding, 
+              var_config$min_value,  
+              var_config$max_value  
+            )
+          }
         }
       }
       
@@ -1147,37 +1740,264 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         if (is_dichotomous_matrix) {
           # Für dichotome Matrix: Alle Werte verwenden (inkl. 0) 
           # KORREKTUR: N = Gesamtstichprobe, nicht nur die mit Werten
-          stats_row <- data.frame(
-            Item = item_label,
-            N = nrow(data),  # KORREKTUR: Gesamtstichprobe statt length(numeric_values)
-            Anteil_Ja = round(mean(numeric_values, na.rm = TRUE), DIGITS_ROUND),
-            Anzahl_Ja = sum(numeric_values == 1, na.rm = TRUE),
-            Anzahl_Nein = sum(numeric_values == 0, na.rm = TRUE),
-            stringsAsFactors = FALSE
-          )
+          
+          # Prüfe ob gewichtete Analyse gewünscht und möglich ist
+          if (!is.null(survey_obj) && WEIGHTS) {
+            cat("  Erstelle gewichtete dichotome Statistiken für", var, "\n")
+            
+            tryCatch({
+              # Gewichtete dichotome Statistiken
+              weighted_mean <- svymean(as.formula(paste("~", var)), survey_obj, na.rm = TRUE)
+              weighted_total <- svytotal(as.formula(paste("~", var)), survey_obj, na.rm = TRUE)
+              
+              # *** FIX: Calculate proper weighted N (sum of weights, not count of cases) ***
+              weighted_n <- sum(weights(survey_obj))
+              
+              # Berechne gewichtete Anzahlen
+              anzahl_ja <- as.numeric(weighted_total)
+              anzahl_nein <- weighted_n - anzahl_ja
+              
+              stats_row <- data.frame(
+                Item = as.character(item_label),
+                N = as.numeric(weighted_n),
+                Anteil_Ja = as.numeric(round(as.numeric(weighted_mean), DIGITS_ROUND)),
+                Anzahl_Ja = as.numeric(round(anzahl_ja, DIGITS_ROUND)),
+                Anzahl_Nein = as.numeric(round(anzahl_nein, DIGITS_ROUND)),
+                stringsAsFactors = FALSE
+              )
+              
+              cat("    ✅ Gewichtete dichotome Statistiken erfolgreich berechnet\n")
+            }, error = function(e) {
+              cat("    ❌ Gewichtete dichotome Statistiken fehlgeschlagen:", e$message, "\n")
+              cat("    → Verwende ungewichtete Statistiken als Fallback\n")
+              
+              # Fallback zu ungewichteten Statistiken
+              stats_row <- data.frame(
+                Item = as.character(item_label),
+                N = as.numeric(nrow(data)),
+                Anteil_Ja = as.numeric(round(mean(numeric_values, na.rm = TRUE), DIGITS_ROUND)),
+                Anzahl_Ja = as.numeric(sum(numeric_values == 1, na.rm = TRUE)),
+                Anzahl_Nein = as.numeric(sum(numeric_values == 0, na.rm = TRUE)),
+                stringsAsFactors = FALSE
+              )
+            })
+          } else {
+            cat("  Erstelle ungewichtete dichotome Statistiken für", var, "\n")
+            
+            # Ungewichtete Statistiken (ursprüngliche Logik)
+            stats_row <- data.frame(
+              Item = as.character(item_label),
+              N = as.numeric(nrow(data)),
+              Anteil_Ja = as.numeric(round(mean(numeric_values, na.rm = TRUE), DIGITS_ROUND)),
+              Anzahl_Ja = as.numeric(sum(numeric_values == 1, na.rm = TRUE)),
+              Anzahl_Nein = as.numeric(sum(numeric_values == 0, na.rm = TRUE)),
+              stringsAsFactors = FALSE
+            )
+          }
         } else {
-          # Für ordinale Matrix: Verwende nur gültige Werte für Statistiken (unverändert)
-          stats_row <- data.frame(
-            Item = item_label,
-            N = length(valid_numeric_values),
-            Mittelwert = round(mean(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
-            Median = round(median(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
-            Q1 = round(as.numeric(quantile(valid_numeric_values, 0.25, na.rm = TRUE)), DIGITS_ROUND),
-            Q3 = round(as.numeric(quantile(valid_numeric_values, 0.75, na.rm = TRUE)), DIGITS_ROUND),
-            Min = min(valid_numeric_values, na.rm = TRUE),
-            Max = max(valid_numeric_values, na.rm = TRUE),
-            SD = round(sd(valid_numeric_values, na.rm = TRUE), DIGITS_ROUND),
-            stringsAsFactors = FALSE
-          )
+          # *** FIX: Ordinale Matrix stats_row mit gewichteten/ungewichteten Statistiken ***
+          
+          # Prüfe ob gewichtete Analyse gewünscht und möglich ist
+          if (!is.null(survey_obj) && WEIGHTS) {
+            cat("  Erstelle gewichtete numerische Statistiken für", var, "\n")
+            
+            # Gewichtete Statistiken mit Survey-Paket
+            tryCatch({
+              # *** FIX: Temporarily update survey object data with range-filtered values ***
+              # Store original data
+              original_var_data <- survey_obj$variables[[var]]
+              
+              # Temporarily replace with range-filtered data
+              survey_obj$variables[[var]] <- numeric_values
+              
+              # Filter survey object for non-NA values (which now excludes out-of-range)
+              survey_filtered <- subset(survey_obj, !is.na(get(var)))
+              
+              # Restore original data after creating filtered object
+              survey_obj$variables[[var]] <- original_var_data
+              
+              if (nrow(survey_filtered$variables) > 0) {
+                # Gewichtete Statistiken berechnen
+                weighted_mean <- svymean(as.formula(paste("~", var)), survey_filtered, na.rm = TRUE)
+                weighted_quantiles <- svyquantile(as.formula(paste("~", var)), survey_filtered, 
+                                                quantiles = c(0.25, 0.5, 0.75), na.rm = TRUE)
+                weighted_var <- svyvar(as.formula(paste("~", var)), survey_filtered, na.rm = TRUE)
+                
+                # *** FIX: Calculate proper weighted N (sum of weights, not count of cases) ***
+                weighted_n <- sum(weights(survey_filtered))
+                
+                # Min/Max aus den Daten (nicht gewichtet, da Extremwerte)
+                data_values <- survey_filtered$variables[[var]]
+                
+                # *** FIX: Proper extraction from survey objects ***
+                mean_val <- as.numeric(coef(weighted_mean))
+                var_val <- as.numeric(coef(weighted_var))
+                
+                # *** FIX: Extract only the quantile values (first column) ***
+                tryCatch({
+                  # svyquantile returns a matrix-like object, extract first column only
+                  quant_matrix <- weighted_quantiles[[var]]
+                  if (is.matrix(quant_matrix)) {
+                    quant_vals <- as.numeric(quant_matrix[, 1])  # First column = actual quantiles
+                  } else {
+                    quant_vals <- as.numeric(quant_matrix)
+                  }
+                }, error = function(e) {
+                  cat("    ⚠️  Quantile extraction failed:", e$message, "\n")
+                  quant_vals <- c(mean_val, mean_val, mean_val)
+                })
+                
+                if (length(quant_vals) >= 3) {
+                  q1_val <- quant_vals[1]
+                  median_val <- quant_vals[2] 
+                  q3_val <- quant_vals[3]
+                } else {
+                  # Fallback if quantiles extraction fails
+                  q1_val <- median_val <- q3_val <- mean_val
+                }
+                
+                stats_row <- data.frame(
+                  Item = as.character(item_label),
+                  N = as.numeric(weighted_n),
+                  Mittelwert = as.numeric(round(mean_val, DIGITS_ROUND)),
+                  Median = as.numeric(round(median_val, DIGITS_ROUND)),
+                  Q1 = as.numeric(round(q1_val, DIGITS_ROUND)),
+                  Q3 = as.numeric(round(q3_val, DIGITS_ROUND)),
+                  Min = as.numeric(min(data_values, na.rm = TRUE)),
+                  Max = as.numeric(max(data_values, na.rm = TRUE)),
+                  SD = as.numeric(round(sqrt(var_val), DIGITS_ROUND)),
+                  stringsAsFactors = FALSE
+                )
+                
+                cat("    ✅ Gewichtete Statistiken erfolgreich berechnet\n")
+              } else {
+                cat("    ⚠️  Keine gültigen Daten für gewichtete Statistiken\n")
+                # *** FIX: Use range-filtered values for fallback ***
+                fallback_data <- numeric_values[!is.na(numeric_values)]
+                
+                if (length(fallback_data) > 0) {
+                  stats_row <- data.frame(
+                    Item = as.character(item_label),
+                    N = as.numeric(length(fallback_data)),
+                    Mittelwert = as.numeric(round(mean(fallback_data, na.rm = TRUE), DIGITS_ROUND)),
+                    Median = as.numeric(round(median(fallback_data, na.rm = TRUE), DIGITS_ROUND)),
+                    Q1 = as.numeric(round(as.numeric(quantile(fallback_data, 0.25, na.rm = TRUE)), DIGITS_ROUND)),
+                    Q3 = as.numeric(round(as.numeric(quantile(fallback_data, 0.75, na.rm = TRUE)), DIGITS_ROUND)),
+                    Min = as.numeric(min(fallback_data, na.rm = TRUE)),
+                    Max = as.numeric(max(fallback_data, na.rm = TRUE)),
+                    SD = as.numeric(round(sd(fallback_data, na.rm = TRUE), DIGITS_ROUND)),
+                    stringsAsFactors = FALSE
+                  )
+                } else {
+                  stats_row <- NULL
+                }
+              }
+            }, error = function(e) {
+              cat("    ❌ Gewichtete Statistiken fehlgeschlagen:", e$message, "\n")
+              cat("    → Verwende ungewichtete Statistiken als Fallback\n")
+              
+              # *** FIX: Use range-filtered values for fallback ***
+              fallback_data <- numeric_values[!is.na(numeric_values)]
+              
+              if (length(fallback_data) > 0) {
+                stats_row <- data.frame(
+                  Item = as.character(item_label),
+                  N = as.numeric(length(fallback_data)),
+                  Mittelwert = as.numeric(round(mean(fallback_data, na.rm = TRUE), DIGITS_ROUND)),
+                  Median = as.numeric(round(median(fallback_data, na.rm = TRUE), DIGITS_ROUND)),
+                  Q1 = as.numeric(round(as.numeric(quantile(fallback_data, 0.25, na.rm = TRUE)), DIGITS_ROUND)),
+                  Q3 = as.numeric(round(as.numeric(quantile(fallback_data, 0.75, na.rm = TRUE)), DIGITS_ROUND)),
+                  Min = as.numeric(min(fallback_data, na.rm = TRUE)),
+                  Max = as.numeric(max(fallback_data, na.rm = TRUE)),
+                  SD = as.numeric(round(sd(fallback_data, na.rm = TRUE), DIGITS_ROUND)),
+                  stringsAsFactors = FALSE
+                )
+                cat("    ✅ Ungewichtete Fallback-Statistiken erfolgreich berechnet\n")
+              } else {
+                cat("    ❌ Auch Fallback-Statistiken fehlgeschlagen: Keine gültigen Daten\n")
+                stats_row <- NULL
+              }
+            })
+          } else {
+            cat("  Erstelle ungewichtete numerische Statistiken für", var, "\n")
+            
+            # *** FIX: Use range-filtered numeric_values, not original data ***
+            unweighted_data <- numeric_values[!is.na(numeric_values)]
+            
+            if (length(unweighted_data) > 0) {
+              stats_row <- data.frame(
+                Item = as.character(item_label),
+                N = as.numeric(length(unweighted_data)),
+                Mittelwert = as.numeric(round(mean(unweighted_data, na.rm = TRUE), DIGITS_ROUND)),
+                Median = as.numeric(round(median(unweighted_data, na.rm = TRUE), DIGITS_ROUND)),
+                Q1 = as.numeric(round(as.numeric(quantile(unweighted_data, 0.25, na.rm = TRUE)), DIGITS_ROUND)),
+                Q3 = as.numeric(round(as.numeric(quantile(unweighted_data, 0.75, na.rm = TRUE)), DIGITS_ROUND)),
+                Min = as.numeric(min(unweighted_data, na.rm = TRUE)),
+                Max = as.numeric(max(unweighted_data, na.rm = TRUE)),
+                SD = as.numeric(round(sd(unweighted_data, na.rm = TRUE), DIGITS_ROUND)),
+                stringsAsFactors = FALSE
+              )
+            } else {
+              stats_row <- NULL
+            }
+          }
         }
         
-        numeric_stats_rows[[var]] <- stats_row
+        # *** FIX: Only add stats_row if it was successfully created ***
+        if (!is.null(stats_row)) {
+          numeric_stats_rows[[var]] <- stats_row
+        } else {
+          cat("  ⚠️  Keine numerischen Statistiken für", var, "erstellt (keine gültigen Werte)\n")
+        }
       }
     }
     
     # Kombiniere numerische Statistiken
     if (length(numeric_stats_rows) > 0) {
-      numeric_stats_table <- do.call(rbind, numeric_stats_rows)
+      # *** EINFACHER FIX: Verwende bind_rows ohne Harmonisierung ***
+      numeric_stats_table <- tryCatch({
+        # Versuche bind_rows (aus dplyr) - das sollte Datentyp-Konflikte automatisch lösen
+        if (requireNamespace("dplyr", quietly = TRUE)) {
+          dplyr::bind_rows(numeric_stats_rows)
+        } else {
+          # Fallback: do.call rbind mit stringsAsFactors=FALSE
+          do.call("rbind", c(numeric_stats_rows, list(stringsAsFactors = FALSE)))
+        }
+      }, error = function(e) {
+        cat("WARNUNG: bind_rows fehlgeschlagen bei numerischen Statistiken\n")
+        cat("Fehler:", e$message, "\n")
+        
+        # Fallback: Harmonisiere nur die Spalten, nicht die Datentypen
+        all_numeric_colnames <- unique(unlist(lapply(numeric_stats_rows, names)))
+        
+        harmonized_rows <- lapply(numeric_stats_rows, function(df) {
+          # Füge fehlende Spalten mit NA hinzu
+          missing_cols <- setdiff(all_numeric_colnames, names(df))
+          for (col in missing_cols) {
+            if (col == "Item") {
+              df[[col]] <- NA_character_
+            } else {
+              df[[col]] <- NA_real_
+            }
+          }
+          # Sortiere Spalten in einheitlicher Reihenfolge
+          df <- df[all_numeric_colnames]
+          return(df)
+        })
+        
+        # Versuche nochmal bind_rows
+        tryCatch({
+          dplyr::bind_rows(harmonized_rows)
+        }, error = function(e2) {
+          # Letzter Fallback: Alles zu character
+          cat("WARNUNG: Auch harmonisiertes bind_rows fehlgeschlagen, verwende character-Fallback\n")
+          char_matrices <- lapply(harmonized_rows, function(x) {
+            data.frame(lapply(x, as.character), stringsAsFactors = FALSE)
+          })
+          do.call("rbind", char_matrices)
+        })
+      })
+      
       rownames(numeric_stats_table) <- NULL
       
       # Bestimme Rückgabe-Typ
@@ -1192,6 +2012,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         table_numeric = numeric_stats_table,
         variable = matrix_name,
         question = question_text,
+        variable_label = get_variable_label(matrix_name, label_type = "short"),
         type = matrix_type,
         matrix_items = matrix_vars,
         n_items = length(matrix_vars),
@@ -1210,6 +2031,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         table = result_table,
         variable = matrix_name,
         question = question_text,
+        variable_label = get_variable_label(matrix_name, label_type = "short"),
         type = "matrix_dichotomous",
         matrix_items = matrix_vars,
         n_items = length(matrix_vars),
@@ -1227,6 +2049,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     table = result_table,
     variable = matrix_name,
     question = question_text,
+    variable_label = get_variable_label(matrix_name, label_type = "short"),
     type = if (is_dichotomous_matrix) "matrix_dichotomous" else "matrix",
     matrix_items = matrix_vars,
     n_items = length(matrix_vars),
@@ -1302,6 +2125,75 @@ make_clean_colname <- function(text) {
 
 
 # =============================================================================
+# OPTIMIERTE HILFSFUNKTIONEN
+# =============================================================================
+
+determine_matrix_type <- function(unique_responses, labels, has_coding, allow_numeric_conversion = TRUE) {
+  "Bestimmt den Matrix-Typ basierend auf Daten und Labels (optimiert, nur einmal)"
+  
+  is_dichotomous_matrix <- FALSE
+  is_ordinal_matrix <- FALSE
+  is_numeric_matrix <- FALSE
+  matrix_type <- "unknown"
+  
+  # Pattern 1: Dichotome Matrix durch Daten-Pattern
+  if (all(unique_responses %in% c("", "1")) || all(unique_responses %in% c("1"))) {
+    is_dichotomous_matrix <- TRUE
+    matrix_type <- "dichotomous (1/empty pattern)"
+  }
+  # *** NEUER FIX: Y/N Pattern in Daten ***
+  else if (all(unique_responses %in% c("Y", "N")) || 
+           all(unique_responses %in% c("Y", "N", "")) ||
+           all(unique_responses %in% c("Y")) ||
+           all(unique_responses %in% c("N"))) {
+    is_dichotomous_matrix <- TRUE
+    matrix_type <- "dichotomous (Y/N data pattern)"
+  }
+  
+  # Pattern 2: Dichotome Matrix durch Label-Pattern (nur wenn nicht schon dichotom)
+  if (!is_dichotomous_matrix && !is.null(labels) && length(labels) <= 3) {
+    label_keys <- names(labels)
+    
+    # Y/N oder 1/0 Pattern in Labels
+    if (any(c("Y", "N") %in% label_keys) || any(c("1", "0") %in% label_keys)) {
+      is_dichotomous_matrix <- TRUE
+      matrix_type <- "dichotomous (label pattern)"
+    }
+    # Nur "1" Werte in Daten (Checkbox-Pattern)
+    else if (all(unique_responses %in% c("", "1")) || all(unique_responses %in% c("1"))) {
+      is_dichotomous_matrix <- TRUE
+      matrix_type <- "dichotomous (checkbox pattern)"
+    }
+  }
+  
+  # Pattern 3: Ordinale Matrix (Kodierung vorhanden und nicht dichotom)
+  # *** FIX: Nur als ordinal behandeln wenn numerische Konvertierung erlaubt ist ***
+  if (!is_dichotomous_matrix && has_coding && allow_numeric_conversion) {
+    is_ordinal_matrix <- TRUE
+    matrix_type <- "ordinal (coding available)"
+  } else if (!is_dichotomous_matrix && has_coding && !allow_numeric_conversion) {
+    # Kodierung vorhanden, aber nicht ordinal (z.B. nominale AO-Codes)
+    matrix_type <- "nominal (coding available, not ordinal)"
+  }
+  
+  # Pattern 4: Numerische Matrix (keine Kodierung, numerische Werte)
+  if (!is_dichotomous_matrix && !has_coding) {
+    test_numeric <- suppressWarnings(as.numeric(unique_responses))
+    if (all(!is.na(test_numeric))) {
+      is_numeric_matrix <- TRUE
+      matrix_type <- "numeric (no coding, numeric values)"
+    }
+  }
+  
+  return(list(
+    is_dichotomous = is_dichotomous_matrix,
+    is_ordinal = is_ordinal_matrix,
+    is_numeric = is_numeric_matrix,
+    type = matrix_type
+  ))
+}
+
+# =============================================================================
 # NEUE VEREINFACHTE HILFSFUNKTIONEN
 # =============================================================================
 
@@ -1368,7 +2260,7 @@ update_variable_list <- function(config_vars, data_vars) {
           updated_interaction_vars <- c(updated_interaction_vars, found_var)
           cat("    ", int_var, "→", found_var, "\n")
         } else {
-          cat("    FEHLER:", int_var, "nicht gefunden\n")
+          cat("    ❌ FEHLER:", int_var, "nicht gefunden\n")
           all_vars_found <- FALSE
           break
         }
@@ -1611,7 +2503,7 @@ prepare_variable_types_minimal <- function(data, config) {
             }
           }
         }, error = function(e) {
-          cat("  FEHLER:", var_name, "- numerische Konvertierung fehlgeschlagen:", e$message, "\n")
+          cat("  ❌ FEHLER:", var_name, "- numerische Konvertierung fehlgeschlagen:", e$message, "\n")
         })
       }
       # Factors werden in Analyse-Funktionen erstellt (Labels bleiben erhalten)
@@ -2172,6 +3064,10 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   # 7. LABELS ANWENDEN (für alle Variablen)
   data <- apply_variable_labels(data, custom_var_labels, custom_val_labels)
   
+  # 7.5. GLOBALES CODEBOOK ERSTELLEN (einmalig für alle Analysen)
+  cat("Erstelle globales Codebook für effiziente Label-Extraktion...\n")
+  create_global_codebook(data)
+  
   # 8. WEITERE AUFBEREITUNG
   category_info <- auto_detect_categories(data, config)
   data <- category_info$data
@@ -2254,23 +3150,64 @@ create_descriptive_tables <- function(prepared_data) {
         NULL
       }
     }, error = function(e) {
-      cat("FEHLER bei Variable", var_name, ":", e$message, "\n")
-      NULL
+      error_msg <- tryCatch({
+        # Versuche Error-Message zu einem String zu konvertieren
+        error_text <- paste(e$message, collapse = " | ")
+        if (length(error_text) > 500) {
+          substr(error_text, 1, 500)
+        } else {
+          error_text
+        }
+      }, error = function(e2) {
+        "Unbekannter Fehler bei Variable-Verarbeitung"
+      })
+      
+      # Versuche auch den Stack Trace zu extrahieren
+      trace_info <- tryCatch({
+        # Extrahiere die Funktion wo der Fehler auftrat
+        trace_str <- capture.output(traceback())
+        if (length(trace_str) > 0) {
+          # Finde die relevante Zeile (nicht alle Zeilen)
+          relevant_lines <- trace_str[grep("at ", trace_str)][1:3]
+          paste(relevant_lines, collapse=" | ")
+        } else {
+          ""
+        }
+      }, error = function(e2) {
+        ""
+      })
+      
+      cat("❌ FEHLER bei Variable", var_name, ":", error_msg, "\n")
+      if (nchar(trace_info) > 0) {
+        cat("  Ort:", trace_info, "\n")
+      }
+      
+      # Gebe ein Error-Objekt statt NULL zurück
+      list(
+        type = "error",
+        variable = var_name,
+        question = question_text,
+        error_message = error_msg,
+        error_class = class(e)[1],
+        error_trace = trace_info
+      )
     })
     
     # Filter-Info zum Ergebnis hinzufügen (falls Filter angewendet)
-    if (!is.null(result) && filter_applied) {
-      result$filter_applied <- TRUE
-      result$filter_string <- filter_info$filter_string
-      result$original_n <- filter_info$original_n
-      result$filtered_n <- filter_info$filtered_n
-    } else if (!is.null(result)) {
-      result$filter_applied <- FALSE
-    }
-    
-    # Nur hinzufügen wenn Ergebnis nicht NULL
     if (!is.null(result)) {
-      results[[var_name]] <- result
+      if (result$type == "error") {
+        # Error-Objekt speichern
+        results[[var_name]] <- result
+      } else if (filter_applied) {
+        result$filter_applied <- TRUE
+        result$filter_string <- filter_info$filter_string
+        result$original_n <- filter_info$original_n
+        result$filtered_n <- filter_info$filtered_n
+        results[[var_name]] <- result
+      } else {
+        result$filter_applied <- FALSE
+        results[[var_name]] <- result
+      }
     }
   }
   
@@ -2343,10 +3280,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     )
   }
   
-  # Debug: Längen der Statistiken prüfen
-  # cat("Debug - Statistik-Längen:\n")
-  # cat("n:", length(stats$n), "- Wert:", stats$n, "\n")
-  # cat("mean:", length(stats$mean), "- Wert:", stats$mean, "\n")
+
   # cat("median:", length(stats$median), "- Wert:", stats$median, "\n")
   # cat("q1:", length(stats$q1), "- Wert:", stats$q1, "\n")
   # cat("q3:", length(stats$q3), "- Wert:", stats$q3, "\n")
@@ -2381,6 +3315,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     table = result_table,
     variable = var_name,
     question = question_text,
+    variable_label = get_variable_label(var_name, label_type = "short"),
     type = "numeric",
     weighted = !is.null(survey_obj) && WEIGHTS
   ))
@@ -2440,9 +3375,7 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
   if (!is.null(labels) && length(labels) > 0) {
     freq_df$Label <- NA_character_
     
-    # Debug: Zeige welche Labels wir haben
     cat("  Mapping Labels für", nrow(freq_df), "Codes\n")
-    cat("  Verfügbare Label-Keys:", paste(names(labels), collapse=", "), "\n")
     
     for (i in seq_len(nrow(freq_df))) {
       code <- as.character(freq_df$Code[i])
@@ -2485,6 +3418,7 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
     table = freq_df,
     variable = var_name,
     question = question_text,
+    variable_label = get_variable_label(var_name, label_type = "short"),
     type = "nominal_coded",
     weighted = !is.null(survey_obj) && WEIGHTS
   ))
@@ -2559,6 +3493,7 @@ create_nominal_text_table <- function(data, var_name, question_text, use_na, cat
     table = freq_df,
     variable = var_name,
     question = question_text,
+    variable_label = get_variable_label(var_name, label_type = "short"),
     type = "nominal_text",
     weighted = !is.null(survey_obj) && WEIGHTS
   ))
@@ -2598,6 +3533,7 @@ create_ordinal_table <- function(data, var_config, use_na, survey_obj = NULL) {
         table_numeric = numeric_result$table,
         variable = var_name,
         question = question_text,
+        variable_label = get_variable_label(var_name, label_type = "short"),
         type = "ordinal",
         weighted = !is.null(survey_obj) && WEIGHTS
       ))
@@ -2608,7 +3544,7 @@ create_ordinal_table <- function(data, var_config, use_na, survey_obj = NULL) {
     return(freq_result)
     
   }, error = function(e) {
-    cat("FEHLER bei ordinaler Variable", var_name, ":", e$message, "\n")
+    cat("❌ FEHLER bei ordinaler Variable", var_name, ":", e$message, "\n")
     return(NULL)
   })
 }
@@ -2741,6 +3677,165 @@ get_value_labels_with_priority <- function(data, var_name, config = NULL) {
 }
 
 # =============================================================================
+# NEUE SHARED FUNCTIONS: MATRIX REFACTORING (PHASE 1)
+# =============================================================================
+
+find_matrix_items <- function(matrix_name, data) {
+  "Unified matrix item detection for all analysis types"
+  
+  # Test multiple name variations
+  possible_names <- c(
+    matrix_name,
+    gsub("\\.", "", matrix_name),
+    gsub("\\.$", "", matrix_name),
+    gsub("_", "", matrix_name)
+  )
+  
+  matrix_vars <- c()
+  actual_name <- matrix_name
+  
+  for (test_name in possible_names) {
+    patterns <- c(
+      paste0("^", test_name, "\\[.+\\]$"),     # ZS01[001]
+      paste0("^", test_name, "\\..+\\.$"),     # ZS01.001.
+      paste0("^", test_name, "_.+$"),          # ZS01_001
+      paste0("^", test_name, "-.+$")           # ZS01-001
+    )
+    
+    found_vars <- c()
+    for (pattern in patterns) {
+      found_vars <- c(found_vars, names(data)[grepl(pattern, names(data))])
+    }
+    
+    # Filter and validate
+    found_vars <- found_vars[!grepl("other", found_vars, ignore.case = TRUE)]
+    found_vars <- unique(found_vars)
+    
+    if (length(found_vars) >= 2) {
+      matrix_vars <- found_vars
+      actual_name <- test_name
+      break
+    }
+  }
+  
+  return(list(
+    items = sort(matrix_vars),
+    actual_name = actual_name,
+    found = length(matrix_vars) > 0
+  ))
+}
+
+get_matrix_config <- function(matrix_name, config) {
+  "Extracts matrix configuration with fallback handling"
+  
+  if (is.null(config) || !"variablen" %in% names(config)) {
+    return(list(
+      coding = NA,
+      min_value = NA,
+      max_value = NA,
+      has_range = FALSE
+    ))
+  }
+  
+  matrix_config <- config$variablen[config$variablen$variable_name == matrix_name, ]
+  
+  if (nrow(matrix_config) == 0) {
+    return(list(
+      coding = NA,
+      min_value = NA,
+      max_value = NA,
+      has_range = FALSE
+    ))
+  }
+  
+  return(list(
+    coding = if(is.na(matrix_config$coding[1])) NA else matrix_config$coding[1],
+    min_value = matrix_config$min_value[1],
+    max_value = matrix_config$max_value[1],
+    has_range = !is.na(matrix_config$min_value[1]) && !is.na(matrix_config$max_value[1])
+  ))
+}
+
+apply_matrix_security_checks <- function(matrix_config, sample_values, labels = NULL) {
+  "Applies security checks for numeric conversion (SA07 fix + IV02 ordinal detection)"
+  
+  has_coding <- !is.na(matrix_config$coding) && matrix_config$coding != ""
+  has_range <- matrix_config$has_range
+  
+  # Detect ordinal coding pattern
+  is_ordinal_coding <- FALSE
+  if (has_coding) {
+    labels <- parse_coding(matrix_config$coding)
+    if (!is.null(labels) && length(labels) > 1) {
+      numeric_codes <- suppressWarnings(as.numeric(names(labels)))
+      is_ordinal_coding <- !any(is.na(numeric_codes))
+    }
+  }
+  
+  # Default: allow conversion if range or ordinal coding
+  allow_numeric_conversion <- has_range || is_ordinal_coding
+  
+  # *** ERWEITERTE AO-CODE PRÜFUNG: Unterscheide nominal vs ordinal ***
+  if (is_ordinal_coding && !has_range && length(sample_values) > 0) {
+    if (all(grepl("^AO\\d+$", sample_values))) {
+      
+      # Prüfe ob Labels ordinal sind (Zahlen mit Beschreibung)
+      is_ordinal_ao_labels <- FALSE
+      if (!is.null(labels) && length(labels) > 0) {
+        label_values <- as.character(labels)
+        # Prüfe auf ordinale Pattern: "1 (trifft überhaupt nicht zu)", "2 (trifft eher nicht zu)"
+        ordinal_pattern_count <- sum(grepl("^\\d+\\s*\\(.*\\)$", label_values))
+        
+        if (ordinal_pattern_count >= 3) {  # Mindestens 3 ordinale Labels
+          is_ordinal_ao_labels <- TRUE
+          cat("✅ SICHERHEITSCHECK: AO-Codes mit ordinalen Labels erkannt -> behandle als ordinal\n")
+          cat("   Ordinale Labels gefunden:", ordinal_pattern_count, "von", length(labels), "\n")
+          cat("   Beispiel Labels:", paste(head(label_values, 3), collapse = ", "), "\n")
+        }
+      }
+      
+      if (!is_ordinal_ao_labels) {
+        # SA07 Fall: AO-Codes ohne ordinale Labels = nominal
+        cat("🚫 SICHERHEITSCHECK: AO-Codes ohne ordinale Labels erkannt -> behandle als nominal\n")
+        cat("   Sample values:", paste(head(sample_values, 5), collapse = ", "), "\n")
+        cat("   Has range:", has_range, "| Has coding:", has_coding, "\n")
+        if (!is.null(labels)) {
+          cat("   Label Beispiele:", paste(head(as.character(labels), 3), collapse = ", "), "\n")
+        }
+        allow_numeric_conversion <- FALSE
+        is_ordinal_coding <- FALSE
+      }
+      # Wenn is_ordinal_ao_labels = TRUE, dann bleibt allow_numeric_conversion = TRUE
+    }
+  }
+  
+  cat("🔍 Matrix Security Check Ergebnis:\n")
+  cat("   allow_numeric_conversion:", allow_numeric_conversion, "\n")
+  cat("   is_ordinal_coding:", is_ordinal_coding, "\n")
+  cat("   has_coding:", has_coding, "\n")
+  cat("   has_range:", has_range, "\n")
+  
+  return(list(
+    allow_numeric_conversion = allow_numeric_conversion,
+    is_ordinal_coding = is_ordinal_coding,
+    has_coding = has_coding,
+    has_range = has_range
+  ))
+}
+
+determine_matrix_type_unified <- function(unique_responses, labels, security_checks) {
+  "Unified matrix type detection with all modern fixes"
+  
+  # Use existing determine_matrix_type but with security checks
+  return(determine_matrix_type(
+    unique_responses, 
+    labels, 
+    security_checks$has_coding, 
+    security_checks$allow_numeric_conversion
+  ))
+}
+
+# =============================================================================
 # NEUE HILFSFUNKTION: LABELS FÜR MATRIX-VARIABLEN MIT FALLBACK-STRATEGIE
 # =============================================================================
 
@@ -2751,6 +3846,7 @@ get_matrix_labels <- function(data, matrix_vars, matrix_name = NULL, var_config 
   
   # Strategie 1: Von erstem Matrix-Item (RDS labels)
   if (length(matrix_vars) > 0 && !is.null(matrix_vars[1])) {
+    cat("🔍 Strategie 1: Suche Labels von erstem Matrix-Item:", matrix_vars[1], "\n")
     temp_config <- if (!is.null(var_config)) {
       list(variablen = var_config)
     } else if (!is.na(matrix_coding)) {
@@ -2764,27 +3860,94 @@ get_matrix_labels <- function(data, matrix_vars, matrix_name = NULL, var_config 
     }
     
     labels <- get_value_labels_with_priority(data, matrix_vars[1], temp_config)
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("   ✅ Labels gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
+    } else {
+      cat("   ❌ Keine Labels von Matrix-Item gefunden\n")
+    }
   }
   
   # Strategie 2: Von Matrix-Variable direkt (falls sie in Daten existiert)
   if ((is.null(labels) || length(labels) == 0) && !is.null(matrix_name) && matrix_name %in% names(data)) {
+    cat("🔍 Strategie 2: Suche Labels von Matrix-Variable:", matrix_name, "\n")
     temp_config <- if (!is.null(var_config)) {
       list(variablen = var_config)
     } else {
       NULL
     }
     labels <- get_value_labels_with_priority(data, matrix_name, temp_config)
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("   ✅ Labels gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
+    } else {
+      cat("   ❌ Keine Labels von Matrix-Variable gefunden\n")
+    }
   }
   
   # Strategie 3: Aus Config-Kodierung parsen
   if ((is.null(labels) || length(labels) == 0) && !is.na(matrix_coding) && matrix_coding != "") {
+    cat("🔍 Strategie 3: Parse Config-Kodierung:", matrix_coding, "\n")
     labels <- parse_coding(matrix_coding)
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("   ✅ Labels aus Config gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
+    } else {
+      cat("   ❌ Keine Labels aus Config-Kodierung\n")
+    }
   }
   
   # Strategie 4: Aus var_config direkt
   if ((is.null(labels) || length(labels) == 0) && !is.null(var_config) && 
       "coding" %in% names(var_config) && !is.na(var_config$coding) && var_config$coding != "") {
+    cat("🔍 Strategie 4: Parse var_config Kodierung:", var_config$coding, "\n")
     labels <- parse_coding(var_config$coding)
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("   ✅ Labels aus var_config gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
+    } else {
+      cat("   ❌ Keine Labels aus var_config\n")
+    }
+  }
+  
+  # *** NEUE STRATEGIE 5: Aus globalem Codebook basierend auf Datenwerten ***
+  if ((is.null(labels) || length(labels) == 0) && exists("global_codebook", envir = .GlobalEnv)) {
+    cat("🔍 Strategie 5: Suche Labels im globalen Codebook basierend auf Datenwerten\n")
+    
+    # Sammle alle eindeutigen Werte aus Matrix-Items
+    all_values <- c()
+    for (var in matrix_vars) {
+      if (var %in% names(data)) {
+        var_values <- data[[var]][!is.na(data[[var]])]
+        all_values <- c(all_values, var_values)
+      }
+    }
+    unique_values <- unique(all_values)
+    
+    cat("   Gefundene Datenwerte:", paste(head(unique_values, 10), collapse = ", "), "\n")
+    
+    # Prüfe ob es AO-Pattern gibt und suche entsprechende Labels
+    if (any(grepl("^AO\\d+$", unique_values))) {
+      cat("   AO-Pattern erkannt, suche Labels...\n")
+      
+      # Erstelle Labels basierend auf bekannten AO-Codes
+      # Diese könnten aus dem globalen Codebook oder aus Standard-Mappings kommen
+      ao_labels <- c(
+        "AO01" = "Vollzeiterwerbstätig",
+        "AO02" = "Teilzeiterwerbstätig", 
+        "AO03" = "Arbeitslos/von Kurzarbeit betroffen",
+        "AO04" = "Rentner bzw. Pensionär",
+        "AO05" = "Hausfrau/Hausmann",
+        "AO06" = "In Ausbildung/Studium",
+        "AO07" = "Sonstiges"
+      )
+      
+      # Filtere nur die Labels, die tatsächlich in den Daten vorkommen
+      found_labels <- ao_labels[names(ao_labels) %in% unique_values]
+      
+      if (length(found_labels) > 0) {
+        labels <- found_labels
+        cat("   ✅ AO-Labels gefunden:", paste(names(labels), "=", labels, collapse = ", "), "\n")
+      } else {
+        cat("   ❌ Keine passenden AO-Labels gefunden\n")
+      }
+    }
   }
   
   return(labels)
@@ -2887,6 +4050,29 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
       }
     }
     
+    # Pattern 5: Reine Zahlen (konvertierte AO-Codes: 1, 2, 3, 4, 5)
+    if (!mapped && grepl("^\\d+$", response_char)) {
+      # Versuche verschiedene AO-Pattern für diese Zahl
+      candidates <- c(
+        response_char,                                    # "1"
+        paste0("AO", sprintf("%02d", as.numeric(response_char))), # "AO01"
+        paste0("AO", response_char),                      # "AO1"
+        sprintf("%02d", as.numeric(response_char))        # "01"
+      )
+      
+      for (candidate in candidates) {
+        if (candidate %in% names(labels)) {
+          response_labels[response_char] <- labels[candidate]
+          mapped_count <- mapped_count + 1
+          if (verbose) cat("      ✓ Numerisch:", response_char, "-> (via", candidate, ") ->", labels[candidate], "\n")
+          mapped <- TRUE
+          break
+        }
+      }
+      
+      if (mapped) next
+    }
+    
     if (!mapped && verbose) {
       cat("      ✗ Kein Match:", response_char, "\n")
     }
@@ -2905,15 +4091,21 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
 # =============================================================================
 
 extract_item_label <- function(data, var_name, matrix_name) {
-  "Extrahiert das echte Label einer Matrix-Variable aus verschiedenen Quellen"
+  "Extrahiert das echte Label einer Matrix-Variable - nutzt zentrale get_variable_label Funktion"
+  
+  # Verwende zentrale Label-Extraktion mit Item-Fokus
+  item_label <- get_variable_label(var_name, label_type = "item")
+  
+  # Falls Item-Extraktion erfolgreich war, verwende das Ergebnis
+  if (item_label != var_name) {
+    return(item_label)
+  }
   
   # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
-  # SICHER: Prüfe ob custom_var_labels existiert (muss nicht immer definiert sein)
   if (exists("custom_var_labels", inherits = FALSE)) {
     if (var_name %in% names(custom_var_labels)) {
       custom_label <- custom_var_labels[[var_name]]
       if (!is.null(custom_label) && custom_label != "") {
-        cat("  Gefundenes Custom Label:", custom_label, "\n")
         return(custom_label)
       }
     }
@@ -2924,30 +4116,50 @@ extract_item_label <- function(data, var_name, matrix_name) {
     if (labelled::is.labelled(data[[var_name]])) {
       var_labels <- labelled::var_label(data[[var_name]])
       if (!is.null(var_labels) && var_labels != "") {
-        # ACHTUNG: Labels von SPSS können sehr lang sein (komplette Fragen)
-        # Kürze auf max 100 Zeichen
+        # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
+        bracket_match <- regexpr("\\[([^\\]]+)\\]", var_labels)
+        if (bracket_match > 0) {
+          bracket_start <- bracket_match[1] + 1
+          bracket_length <- attr(bracket_match, "match.length") - 2
+          item_label <- substr(var_labels, bracket_start, bracket_start + bracket_length - 1)
+          
+          if (nchar(item_label) > 5 && item_label != var_name) {
+            return(item_label)
+          }
+        }
+        
+        # Fallback: Kürze auf max 100 Zeichen
         shortened <- substr(var_labels, 1, 100)
-        if (shortened != var_name && nchar(var_labels) > 10) {  # Nur wenn sinnvoll
-          cat("  Gefundenes Labelled Label (gekürzt):", shortened, "...\n")
+        if (shortened != var_name && nchar(var_labels) > 10) {
           return(shortened)
         }
       }
     }
   }
   
-  # 3. PRIORITÄT: Variable Labels aus Attributen (mit intelligenter Längenbegrenzung)
+  # 3. PRIORITÄT: Variable Labels aus Attributen (mit intelligenter Item-Label-Extraktion)
   var_label <- attr(data[[var_name]], "label")
+  
   if (!is.null(var_label) && var_label != "" && var_label != var_name) {
-    # ACHTUNG: SPSS Labels können Fragetexte sein, nicht Matrix-Item-Labels
-    # ABER: Verwende sie trotzdem mit intelligenter Kürzung
     
-    # Prüfe ob Label ein Item-Label ist (nicht die Hauptfrage):
-    # - Item-Labels sind typischerweise < 150 Zeichen
-    # - Sie enthalten NICHT den kompletten Fragebeschreibung
+    # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
+    # Pattern: "[Item-Text] Fragentext..." -> "Item-Text"
+    bracket_match <- regexpr("\\[([^\\]]+)\\]", var_label)
     
+    if (bracket_match > 0) {
+      # Extrahiere Text zwischen eckigen Klammern
+      bracket_start <- bracket_match[1] + 1  # Nach der öffnenden Klammer
+      bracket_length <- attr(bracket_match, "match.length") - 2  # Ohne die Klammern
+      item_label <- substr(var_label, bracket_start, bracket_start + bracket_length - 1)
+      
+      if (nchar(item_label) > 5 && item_label != var_name) {  # Sinnvolle Länge
+        return(item_label)
+      }
+    }
+    
+    # Fallback: Normale Label-Verarbeitung
     if (nchar(var_label) < 150) {
       # Kurz genug - verwende wie es ist
-      cat("  Gefundenes Variable Label:", var_label, "\n")
       return(var_label)
     } else {
       # Zu lang - kürze auf ersten sinnvollen Satz/Teil
@@ -2959,21 +4171,51 @@ extract_item_label <- function(data, var_name, matrix_name) {
         shortened <- substr(var_label, 1, 100)
       }
       shortened <- trimws(shortened)
-      cat("  Gefundenes Variable Label (gekürzt):", shortened, "...\n")
       return(shortened)
+    }
+  }
+  
+  # *** PRÜFE ALLE MÖGLICHEN LABEL-ATTRIBUTE ***
+  all_attrs <- attributes(data[[var_name]])
+  
+  # Prüfe verschiedene Label-Attribute
+  label_attrs <- c("label", "labels", "var.labels", "variable.labels", "description")
+  for (attr_name in label_attrs) {
+    if (attr_name %in% names(all_attrs)) {
+      attr_value <- all_attrs[[attr_name]]
+      
+      if (!is.null(attr_value) && attr_value != "" && attr_value != var_name) {
+        # Versuche Klammer-Extraktion
+        bracket_match <- regexpr("\\[([^\\]]+)\\]", attr_value)
+        if (bracket_match > 0) {
+          bracket_start <- bracket_match[1] + 1
+          bracket_length <- attr(bracket_match, "match.length") - 2
+          item_label <- substr(attr_value, bracket_start, bracket_start + bracket_length - 1)
+          
+          if (nchar(item_label) > 5 && item_label != var_name) {
+            return(item_label)
+          }
+        }
+        
+        # Fallback: Verwende Attribut direkt (gekürzt)
+        if (nchar(attr_value) < 150) {
+          return(attr_value)
+        } else {
+          shortened <- substr(attr_value, 1, 100)
+          return(shortened)
+        }
+      }
     }
   }
   
   # 4. PRIORITÄT: Intelligente Extraktion aus Variablennamen
   intelligent_label <- create_intelligent_label(var_name, matrix_name)
   if (intelligent_label != var_name) {
-    cat("  Erstelltes intelligentes Label:", intelligent_label, "\n")
     return(intelligent_label)
   }
   
   # 5. FALLBACK: Formatierter Variablenname
   fallback_label <- create_fallback_label(var_name, matrix_name)
-  cat("  Fallback Label:", fallback_label, "\n")
   return(fallback_label)
 }
 
@@ -3174,10 +4416,14 @@ create_labeled_factor <- function(data, var_name, config) {
     cat("    Gemappt:", mapped_count, "Werte\n")
     
     # Erstelle Factor mit Labels
-    return(as.factor(labeled_values))
+    # *** FIX: Filter out empty values before creating factor ***
+    valid_levels <- unique(labeled_values[!is.na(labeled_values) & labeled_values != ""])
+    return(factor(labeled_values, levels = valid_levels))
   } else {
     cat("  ⚠  Keine Labels für", var_name, "- verwende rohe Werte\n")
-    return(as.factor(original_values))
+    # *** FIX: Filter out empty values before creating factor ***
+    valid_levels <- unique(original_values[!is.na(original_values) & original_values != ""])
+    return(factor(original_values, levels = valid_levels))
   }
 }
 
@@ -3219,49 +4465,18 @@ create_matrix_crosstab <- function(data, matrix_var, group_var, survey_obj = NUL
   
   cat("Erstelle Matrix-Kreuztabelle:", matrix_var, "x", group_var, "\n")
   
-  # Finde Matrix-Items (bestehende Logik...)
-  possible_matrix_names <- c(
-    matrix_var,
-    gsub("\\.", "", matrix_var),
-    gsub("\\.$", "", matrix_var),
-    gsub("_", "", matrix_var)
-  )
+  # *** PHASE 3: Use shared matrix item detection ***
+  matrix_result <- find_matrix_items(matrix_var, data)
   
-  matrix_vars <- c()
-  actual_matrix_name <- matrix_var
-  
-  for (test_name in possible_matrix_names) {
-    matrix_patterns <- c(
-      paste0("^", test_name, "\\[.+\\]$"),
-      paste0("^", test_name, "\\..+\\.$"),
-      paste0("^", test_name, "_.+$"),
-      paste0("^", test_name, "-.+$")
-    )
-    
-    test_matrix_vars <- c()
-    for (pattern in matrix_patterns) {
-      found_vars <- names(data)[grepl(pattern, names(data))]
-      test_matrix_vars <- c(test_matrix_vars, found_vars)
-    }
-    
-    test_matrix_vars <- test_matrix_vars[!grepl("other", test_matrix_vars, ignore.case = TRUE)]
-    test_matrix_vars <- unique(test_matrix_vars)
-    
-    if (length(test_matrix_vars) >= 2) {
-      matrix_vars <- test_matrix_vars
-      actual_matrix_name <- test_name
-      cat("Matrix-Items gefunden mit Basis-Name:", actual_matrix_name, "\n")
-      break
-    }
-  }
-  
-  matrix_vars <- sort(matrix_vars)
-  
-  if (length(matrix_vars) == 0) {
+  if (!matrix_result$found) {
     cat("WARNUNG: Keine Matrix-Items gefunden für", matrix_var, "\n")
     return(NULL)
   }
   
+  matrix_vars <- matrix_result$items
+  actual_matrix_name <- matrix_result$actual_name
+  
+  cat("Matrix-Items gefunden mit Basis-Name:", actual_matrix_name, "\n")
   cat("Gefundene Matrix-Items:", length(matrix_vars), "\n")
   
   # PAIRWISE DELETION: Entferne nur Zeilen wo Gruppe fehlt (gemeinsame Bedingung)
@@ -3293,114 +4508,48 @@ create_matrix_crosstab <- function(data, matrix_var, group_var, survey_obj = NUL
     complete_data, matrix_vars, group_display_var, unique_groups, matrix_coding, survey_obj, actual_matrix_name
   )
   
-  # 2. NUMERISCHE TABELLE (falls Kodierung vorhanden)
+  # *** PHASE 3: Use shared config extraction and unified matrix type detection ***
+  
+  # Extract matrix configuration
+  matrix_config_obj <- get_matrix_config(matrix_var, config)
+  
+  # *** REORDERED: Get labels BEFORE security checks for enhanced AO-code detection ***
+  labels <- get_matrix_labels(complete_data, matrix_vars, actual_matrix_name, NULL, matrix_coding)
+  
+  # Get sample values for security checks
+  sample_values <- c()
+  for (var in matrix_vars[1:min(3, length(matrix_vars))]) {
+    var_values <- complete_data[[var]][!is.na(complete_data[[var]])]
+    sample_values <- c(sample_values, head(var_values, 10))
+  }
+  sample_values <- unique(sample_values)
+  
+  # *** ENHANCED: Apply security checks with labels ***
+  security_checks <- apply_matrix_security_checks(matrix_config_obj, sample_values, labels)
+  
+  # Collect unique responses for type detection
+  all_data_values <- c()
+  for (var in matrix_vars) {
+    var_values <- complete_data[[var]][!is.na(complete_data[[var]])]
+    all_data_values <- c(all_data_values, var_values)
+  }
+  unique_responses <- unique(all_data_values)
+  unique_responses <- unique_responses[!is.na(unique_responses) & unique_responses != ""]
+  
+  # Unified matrix type detection
+  matrix_type_info <- determine_matrix_type_unified(unique_responses, labels, security_checks)
+  
+  cat("Matrix-Typ:", matrix_type_info$type, "\n")
+  
+  # 2. NUMERISCHE TABELLE (basierend auf unified type detection UND security checks)
   numeric_table <- NULL
-  if (!is.na(matrix_coding) && matrix_coding != "") {
-    
-    # *** KOPIERE DIE LOGIK AUS create_matrix_table() ***
-    
-    # PRÜFE OB KODIERUNG VORHANDEN IST (ordinal behandeln) ODER DICHOTOM ERKANNT
-    has_coding <- !is.na(matrix_coding) && matrix_coding != ""
-    
-    # NEUE LOGIK: Erkenne ordinale Matrix basierend auf Kodierung (ANALOG zu create_matrix_table)
-    is_ordinal_matrix <- FALSE
-    if (has_coding) {
-      labels <- parse_coding(matrix_coding)  # <-- KORRIGIERT: Verwende matrix_coding statt var_config$coding
-      if (!is.null(labels) && length(labels) > 2) {
-        # Prüfe ob Labels numerische Codes haben (ordinal)
-        numeric_codes <- suppressWarnings(as.numeric(names(labels)))
-        if (!any(is.na(numeric_codes)) && length(unique(numeric_codes)) > 2) {
-          is_ordinal_matrix <- TRUE
-          cat("Ordinale Matrix erkannt basierend auf numerischen Codes in Kodierung\n")
-        }
-      }
-    }
-    
-    # Erkenne dichotome Matrix (ANALOG zu create_matrix_table)
-    is_dichotomous_matrix <- FALSE
-    if (!is.null(labels) && length(labels) <= 3) {  # Max 3 Kategorien für dichotom
-      label_keys <- names(labels)
-      
-      # Pattern 1: Y/N in Kodierung
-      if (any(c("Y", "N") %in% label_keys) || any(c("1", "0") %in% label_keys)) {
-        is_dichotomous_matrix <- TRUE
-        cat("Dichotome Matrix erkannt (Y/N Pattern in Kodierung)\n")
-      }
-    }
-    
-    # *** ERWEITERTE BEDINGUNG: Erstelle numerische Tabelle für ordinale UND binäre Matrices ***
-    if (is_ordinal_matrix || is_dichotomous_matrix) {
-      numeric_table <- create_matrix_numeric_crosstab(
-        complete_data, matrix_vars, group_display_var, unique_groups, matrix_coding, matrix_config, actual_matrix_name
-      )
-    } else {
-      cat("Matrix ist weder ordinal noch binär - keine numerische Tabelle erstellt\n")
-    }
-    
+  if (security_checks$allow_numeric_conversion && (matrix_type_info$is_dichotomous || matrix_type_info$is_ordinal || matrix_type_info$is_numeric)) {
+    cat("Matrix hat ordinale/numerische Eigenschaften UND Konvertierung erlaubt - erstelle numerische Kreuztabelle\n")
+    numeric_table <- create_matrix_numeric_crosstab(
+      complete_data, matrix_vars, group_display_var, unique_groups, matrix_coding, matrix_config, actual_matrix_name
+    )
   } else {
-    # *** FALLBACK: Wenn keine Kodierung in Config, analysiere Datenwerte direkt ***
-    cat("Keine Kodierung in Config gefunden, analysiere Datenwerte...\n")
-    
-    # Sammle alle Datenwerte aus Matrix-Items
-    all_data_values <- c()
-    for (var in matrix_vars) {
-      var_values <- complete_data[[var]][!is.na(complete_data[[var]])]
-      all_data_values <- c(all_data_values, var_values)
-    }
-    
-    # Eindeutige Kategorien ermitteln
-    unique_responses <- unique(all_data_values)
-    unique_responses <- unique_responses[!is.na(unique_responses) & unique_responses != ""]
-    
-    cat("Gefundene Datenwerte:", paste(head(unique_responses, 10), collapse = ", "), "\n")
-    
-    # *** VERBESSERTE ORDINAL-ERKENNUNG ***
-    
-    # Prüfe ob Werte das Format "Zahl (Text)" haben (ordinal)
-    ordinal_pattern <- "^\\d+(\\s*\\(.*\\))?$"
-    ordinal_matches <- str_detect(unique_responses, ordinal_pattern)
-    
-    # Entferne "Weiß nicht" und ähnliche aus der Ordinal-Prüfung
-    non_ordinal_patterns <- c("Weiß nicht", "Keine Angabe", "N/A", "k.A.", "Missing")
-    ordinal_responses <- unique_responses[!unique_responses %in% non_ordinal_patterns]
-    
-    cat("Gefilterte ordinale Responses:", paste(ordinal_responses, collapse = ", "), "\n")
-    
-    # Prüfe ob MINDESTENS 3 ordinale Werte vorhanden sind (nicht alle)
-    ordinal_count <- sum(str_detect(ordinal_responses, ordinal_pattern))
-    total_count <- length(ordinal_responses)
-    
-    cat("Ordinale Pattern gefunden:", ordinal_count, "von", total_count, "Werten\n")
-    
-    # *** NEUE BEDINGUNG: Mindestens 3 ordinale Werte (statt alle) ***
-    if (ordinal_count >= 3) {
-      # Extrahiere numerische Codes nur von ordinalen Werten
-      ordinal_values <- ordinal_responses[str_detect(ordinal_responses, ordinal_pattern)]
-      numeric_codes <- str_extract(ordinal_values, "^\\d+")
-      numeric_codes <- as.numeric(numeric_codes)
-      
-      cat("Extrahierte numerische Codes:", paste(numeric_codes, collapse = ", "), "\n")
-      
-      if (!any(is.na(numeric_codes)) && length(unique(numeric_codes)) >= 3) {
-        cat("Matrix erkannt als ordinal (durch Datenwert-Analyse)\n")
-        
-        numeric_table <- create_matrix_numeric_crosstab(
-          complete_data, matrix_vars, group_display_var, unique_groups, matrix_coding, matrix_config, actual_matrix_name
-        )
-      } else {
-        cat("Numerische Codes nicht eindeutig ordinal\n")
-      }
-    } else if (all(unique_responses %in% c("", "1")) || all(unique_responses %in% c("1"))) {
-      # Dichotome Matrix: Nur "1" und leere Werte
-      cat("Matrix erkannt als dichotom (1/leer Pattern in Datenwerten)\n")
-      
-      numeric_table <- create_matrix_numeric_crosstab(
-        complete_data, matrix_vars, group_display_var, unique_groups, matrix_coding, matrix_config, actual_matrix_name
-      )
-    } else {
-      cat("Matrix-Datenwerte sind weder ordinal noch dichotom - keine numerische Tabelle\n")
-      cat("Alle Werte:", paste(unique_responses, collapse = ", "), "\n")
-    }
+    cat("Matrix ist nominal ODER Konvertierung nicht erlaubt - keine numerische Tabelle erstellt\n")
   }
   
   # Rückgabe-Struktur bleibt unverändert
@@ -3422,7 +4571,8 @@ create_matrix_crosstab <- function(data, matrix_var, group_var, survey_obj = NUL
 create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, unique_groups, matrix_coding, survey_obj, actual_matrix_name) {
   "Erstellt kategoriale Kreuztabelle für Matrix-Items - NUR ABSOLUTE WERTE"
   
-  # Alle Antwortkategorien sammeln (bestehende Logik)
+  # *** FIX: Sammle Antwortkategorien aus tatsächlichen Datenwerten ***
+  # (Konsistent mit create_matrix_table Fix für unique_responses)
   all_responses <- c()
   for (var in matrix_vars) {
     var_responses <- unique(data[[var]][!is.na(data[[var]])])
@@ -3431,6 +4581,8 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
   unique_responses <- unique(all_responses)
   unique_responses <- unique_responses[!is.na(unique_responses) & unique_responses != ""]
   unique_responses <- sort_response_categories(unique_responses)
+  
+
   
   # Labels aus Kodierung erstellen (bestehende Logik)
   response_labels <- unique_responses
@@ -3517,8 +4669,21 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
     result_rows[[var]] <- result_row
   }
   
-  # Alle Zeilen zusammenfügen
+  # *** FIX: Harmonize column structure before rbind ***
   if (length(result_rows) > 0) {
+    # Get all possible column names from all result_rows
+    all_colnames <- unique(unlist(lapply(result_rows, names)))
+    
+    # Ensure all result_rows have the same columns
+    result_rows <- lapply(result_rows, function(df) {
+      missing_cols <- setdiff(all_colnames, names(df))
+      for (col in missing_cols) {
+        df[[col]] <- 0  # Default value for missing columns
+      }
+      # Reorder columns to match
+      df[all_colnames]
+    })
+    
     result_table <- do.call(rbind, result_rows)
     rownames(result_table) <- NULL
     return(result_table)
@@ -3618,8 +4783,27 @@ create_matrix_numeric_crosstab <- function(data, matrix_vars, group_var, unique_
     result_rows[[var]] <- result_row
   }
   
-  # Alle Zeilen zusammenfügen
+  # *** FIX: Harmonize column structure before rbind ***
   if (length(result_rows) > 0) {
+    # Get all possible column names from all result_rows
+    all_colnames <- unique(unlist(lapply(result_rows, names)))
+    
+    # Ensure all result_rows have the same columns
+    result_rows <- lapply(result_rows, function(df) {
+      missing_cols <- setdiff(all_colnames, names(df))
+      for (col in missing_cols) {
+        if (grepl("_Mean|_Median|_SD", col)) {
+          df[[col]] <- NA  # NA for statistical measures
+        } else if (grepl("_N", col)) {
+          df[[col]] <- 0   # 0 for counts
+        } else {
+          df[[col]] <- NA  # Default NA for other columns
+        }
+      }
+      # Reorder columns to match
+      df[all_colnames]
+    })
+    
     result_table <- do.call(rbind, result_rows)
     rownames(result_table) <- NULL
     return(result_table)
@@ -3658,13 +4842,16 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     return(NULL)
   }
   
-  # AUTOMATISCHE TYP-ERKENNUNG AUS DEN DATEN
-  var1_actual_type <- detect_actual_data_type(data, var1)
-  var2_actual_type <- detect_actual_data_type(data, var2)
+  # *** ERWEITERTE TYP-ERKENNUNG MIT CONFIG UND LABELS ***
+  var1_type_info <- detect_variable_type_advanced(var1, data, config)
+  var2_type_info <- detect_variable_type_advanced(var2, data, config)
   
-  cat("Automatische Typ-Erkennung:\n")
-  cat("  ", var1, "→", var1_actual_type, "\n")
-  cat("  ", var2, "→", var2_actual_type, "\n")
+  var1_actual_type <- var1_type_info$type
+  var2_actual_type <- var2_type_info$type
+  
+  cat("Erweiterte Typ-Erkennung:\n")
+  cat("  ", var1, "→", var1_actual_type, "(", var1_type_info$reason, ")\n")
+  cat("  ", var2, "→", var2_actual_type, "(", var2_type_info$reason, ")\n")
   
   # Daten ohne fehlende Werte für beide Variablen - ERST HIER FILTERN
   complete_data <- data[!is.na(data[[var1]]) & !is.na(data[[var2]]), ]
@@ -3697,9 +4884,14 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     cat("  ✓ Gelabelte Factors erstellt für Kreuztabelle\n")
   }
   
-  # ENTSCHEIDUNG BASIEREND AUF TATSÄCHLICHEN DATENTYPEN
-  var1_is_numeric <- var1_actual_type %in% c("numeric", "numeric_discrete")
-  var2_is_numeric <- var2_actual_type %in% c("numeric", "numeric_discrete")
+  # *** ENTSCHEIDUNG BASIEREND AUF ERWEITERTEN DATENTYPEN ***
+  # Numerisch behandeln: numeric, ordinal, dichotomous MIT erlaubter Konvertierung
+  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var1_type_info$allow_numeric
+  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var2_type_info$allow_numeric
+  
+  cat("Numerische Behandlung:\n")
+  cat("  ", var1, "→ numerisch:", var1_is_numeric, "(Typ:", var1_actual_type, ", Erlaubt:", var1_type_info$allow_numeric, ")\n")
+  cat("  ", var2, "→ numerisch:", var2_is_numeric, "(Typ:", var2_actual_type, ", Erlaubt:", var2_type_info$allow_numeric, ")\n")
   
   # NEUER FIX: Factor-zu-Numerisch Konvertierung für "numeric_discrete"
   if (var1_is_numeric && is.factor(complete_data[[var1]])) {
@@ -3897,7 +5089,7 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   # 1. Prüfe numerische Variable
   valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
   if (length(valid_numeric) == 0) {
-    cat("FEHLER: Numerische Variable", numeric_var, "hat keine gültigen Werte\n")
+    cat("❌ FEHLER: Numerische Variable", numeric_var, "hat keine gültigen Werte\n")
     return(NULL)
   }
   
@@ -3922,7 +5114,7 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
     # Neue Validierung nach Konvertierung
     valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
     if (length(valid_numeric) == 0) {
-      cat("FEHLER: Konvertierung zu numerisch fehlgeschlagen\n")
+      cat("❌ FEHLER: Konvertierung zu numerisch fehlgeschlagen\n")
       return(NULL)
     }
   } else if (!is.numeric(data[[numeric_var]])) {
@@ -3932,33 +5124,33 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
     
     valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
     if (length(valid_numeric) == 0) {
-      cat("FEHLER: Variable", numeric_var, "kann nicht zu numerisch konvertiert werden\n")
+      cat("❌ FEHLER: Variable", numeric_var, "kann nicht zu numerisch konvertiert werden\n")
       return(NULL)
     }
   }
   
   if (length(unique(valid_numeric)) < 2) {
-    cat("FEHLER: Numerische Variable", numeric_var, "hat keine Varianz (alle Werte gleich)\n")
+    cat("❌ FEHLER: Numerische Variable", numeric_var, "hat keine Varianz (alle Werte gleich)\n")
     return(NULL)
   }
   
   # 2. Prüfe Gruppenvariable
   valid_groups <- data[[group_var]][!is.na(data[[group_var]])]
   if (length(valid_groups) == 0) {
-    cat("FEHLER: Gruppenvariable", group_var, "hat keine gültigen Werte\n")
+    cat("❌ FEHLER: Gruppenvariable", group_var, "hat keine gültigen Werte\n")
     return(NULL)
   }
   
   unique_groups <- unique(valid_groups)
   if (length(unique_groups) < 2) {
-    cat("FEHLER: Gruppenvariable", group_var, "hat nur eine Gruppe:", unique_groups, "\n")
+    cat("❌ FEHLER: Gruppenvariable", group_var, "hat nur eine Gruppe:", unique_groups, "\n")
     return(NULL)
   }
   
   # 3. Prüfe vollständige Fälle
   complete_cases <- !is.na(data[[numeric_var]]) & !is.na(data[[group_var]])
   if (sum(complete_cases) < 5) {
-    cat("FEHLER: Zu wenige vollständige Fälle (", sum(complete_cases), ") für Gruppenvergleich\n")
+    cat("❌ FEHLER: Zu wenige vollständige Fälle (", sum(complete_cases), ") für Gruppenvergleich\n")
     return(NULL)
   }
   
@@ -4004,26 +5196,57 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
           max_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 1, na.rm = TRUE)
           var_result <- svyvar(as.formula(paste("~", numeric_var)), group_survey, na.rm = TRUE)
           
-          # Sichere Konvertierung zu numerisch - prüfe Länge
-          mean_val <- suppressWarnings(as.numeric(mean_result[1]))
+          # *** FIX: Proper extraction from survey objects using coef() ***
+          mean_val <- suppressWarnings(as.numeric(coef(mean_result)))
           if (is.na(mean_val)) mean_val <- NA
           
-          median_val <- suppressWarnings(as.numeric(median_result[1]))
+          # For quantiles, extract from matrix properly
+          median_val <- suppressWarnings({
+            if (is.matrix(median_result[[numeric_var]])) {
+              as.numeric(median_result[[numeric_var]][1, 1])
+            } else {
+              as.numeric(median_result[[numeric_var]])
+            }
+          })
           if (is.na(median_val)) median_val <- NA
           
-          q1_val <- suppressWarnings(as.numeric(q1_result[1]))
+          q1_val <- suppressWarnings({
+            if (is.matrix(q1_result[[numeric_var]])) {
+              as.numeric(q1_result[[numeric_var]][1, 1])
+            } else {
+              as.numeric(q1_result[[numeric_var]])
+            }
+          })
           if (is.na(q1_val)) q1_val <- NA
           
-          q3_val <- suppressWarnings(as.numeric(q3_result[1]))
+          q3_val <- suppressWarnings({
+            if (is.matrix(q3_result[[numeric_var]])) {
+              as.numeric(q3_result[[numeric_var]][1, 1])
+            } else {
+              as.numeric(q3_result[[numeric_var]])
+            }
+          })
           if (is.na(q3_val)) q3_val <- NA
           
-          min_val <- suppressWarnings(as.numeric(min_result[1]))
+          min_val <- suppressWarnings({
+            if (is.matrix(min_result[[numeric_var]])) {
+              as.numeric(min_result[[numeric_var]][1, 1])
+            } else {
+              as.numeric(min_result[[numeric_var]])
+            }
+          })
           if (is.na(min_val)) min_val <- NA
           
-          max_val <- suppressWarnings(as.numeric(max_result[1]))
+          max_val <- suppressWarnings({
+            if (is.matrix(max_result[[numeric_var]])) {
+              as.numeric(max_result[[numeric_var]][1, 1])
+            } else {
+              as.numeric(max_result[[numeric_var]])
+            }
+          })
           if (is.na(max_val)) max_val <- NA
           
-          sd_val <- suppressWarnings(as.numeric(sqrt(var_result[1])))
+          sd_val <- suppressWarnings(as.numeric(sqrt(coef(var_result))))
           if (is.na(sd_val)) sd_val <- NA
           
           stats_list[[as.character(group)]] <- list(
@@ -4098,16 +5321,35 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   
   for (group_name in names(stats_list)) {
     stats <- stats_list[[group_name]]
+    
+    # *** FIX: Validate stats object before creating data.frame ***
+    if (is.null(stats) || length(stats) == 0) {
+      cat("  ⚠️  Keine Statistiken für Gruppe", group_name, "- überspringe\n")
+      next
+    }
+    
+    # Ensure all required stats elements exist and have valid values
+    safe_stats <- list(
+      n = if(is.null(stats$n) || length(stats$n) == 0) 0 else stats$n,
+      mean = if(is.null(stats$mean) || length(stats$mean) == 0) NA else stats$mean,
+      median = if(is.null(stats$median) || length(stats$median) == 0) NA else stats$median,
+      q1 = if(is.null(stats$q1) || length(stats$q1) == 0) NA else stats$q1,
+      q3 = if(is.null(stats$q3) || length(stats$q3) == 0) NA else stats$q3,
+      min = if(is.null(stats$min) || length(stats$min) == 0) NA else stats$min,
+      max = if(is.null(stats$max) || length(stats$max) == 0) NA else stats$max,
+      sd = if(is.null(stats$sd) || length(stats$sd) == 0) NA else stats$sd
+    )
+    
     group_stats_df <- rbind(group_stats_df, data.frame(
       Gruppe = group_name,
-      N = stats$n,
-      Mittelwert = round(as.numeric(stats$mean), DIGITS_ROUND),
-      Median = round(as.numeric(stats$median), DIGITS_ROUND),
-      Q1 = round(as.numeric(stats$q1), DIGITS_ROUND),
-      Q3 = round(as.numeric(stats$q3), DIGITS_ROUND),
-      Min = round(as.numeric(stats$min), DIGITS_ROUND),
-      Max = round(as.numeric(stats$max), DIGITS_ROUND),
-      Standardabweichung = round(as.numeric(stats$sd), DIGITS_ROUND),
+      N = safe_stats$n,
+      Mittelwert = round(as.numeric(safe_stats$mean), DIGITS_ROUND),
+      Median = round(as.numeric(safe_stats$median), DIGITS_ROUND),
+      Q1 = round(as.numeric(safe_stats$q1), DIGITS_ROUND),
+      Q3 = round(as.numeric(safe_stats$q3), DIGITS_ROUND),
+      Min = round(as.numeric(safe_stats$min), DIGITS_ROUND),
+      Max = round(as.numeric(safe_stats$max), DIGITS_ROUND),
+      Standardabweichung = round(as.numeric(safe_stats$sd), DIGITS_ROUND),
       stringsAsFactors = FALSE
     ))
   }
@@ -4185,18 +5427,32 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
     )
   }
   
-  group_stats_df <- rbind(group_stats_df, data.frame(
-    Gruppe = "Gesamt",
-    N = total_stats$n,
-    Mittelwert = round(as.numeric(total_stats$mean), DIGITS_ROUND),
-    Median = round(as.numeric(total_stats$median), DIGITS_ROUND),
-    Q1 = round(as.numeric(total_stats$q1), DIGITS_ROUND),
-    Q3 = round(as.numeric(total_stats$q3), DIGITS_ROUND),
-    Min = round(as.numeric(total_stats$min), DIGITS_ROUND),
-    Max = round(as.numeric(total_stats$max), DIGITS_ROUND),
-    Standardabweichung = round(as.numeric(total_stats$sd), DIGITS_ROUND),
-    stringsAsFactors = FALSE
-  ))
+  # *** FIX: Validate total_stats before creating data.frame ***
+  if (!is.null(total_stats) && length(total_stats) > 0) {
+    safe_total_stats <- list(
+      n = if(is.null(total_stats$n) || length(total_stats$n) == 0) 0 else total_stats$n,
+      mean = if(is.null(total_stats$mean) || length(total_stats$mean) == 0) NA else total_stats$mean,
+      median = if(is.null(total_stats$median) || length(total_stats$median) == 0) NA else total_stats$median,
+      q1 = if(is.null(total_stats$q1) || length(total_stats$q1) == 0) NA else total_stats$q1,
+      q3 = if(is.null(total_stats$q3) || length(total_stats$q3) == 0) NA else total_stats$q3,
+      min = if(is.null(total_stats$min) || length(total_stats$min) == 0) NA else total_stats$min,
+      max = if(is.null(total_stats$max) || length(total_stats$max) == 0) NA else total_stats$max,
+      sd = if(is.null(total_stats$sd) || length(total_stats$sd) == 0) NA else total_stats$sd
+    )
+    
+    group_stats_df <- rbind(group_stats_df, data.frame(
+      Gruppe = "Gesamt",
+      N = safe_total_stats$n,
+      Mittelwert = round(as.numeric(safe_total_stats$mean), DIGITS_ROUND),
+      Median = round(as.numeric(safe_total_stats$median), DIGITS_ROUND),
+      Q1 = round(as.numeric(safe_total_stats$q1), DIGITS_ROUND),
+      Q3 = round(as.numeric(safe_total_stats$q3), DIGITS_ROUND),
+      Min = round(as.numeric(safe_total_stats$min), DIGITS_ROUND),
+      Max = round(as.numeric(safe_total_stats$max), DIGITS_ROUND),
+      Standardabweichung = round(as.numeric(safe_total_stats$sd), DIGITS_ROUND),
+      stringsAsFactors = FALSE
+    ))
+  }
   
   return(list(
     group_means = group_stats_df,
@@ -4221,6 +5477,7 @@ create_crosstabs <- function(prepared_data) {
   }
   
   results <- list()
+  errors <- list()  # Neue Liste für Fehler-Tracking
   
   # Gewichtetes Survey-Objekt erstellen falls gewünscht
   survey_obj <- NULL
@@ -4262,18 +5519,28 @@ create_crosstabs <- function(prepared_data) {
     var2_is_matrix <- is_matrix_variable(var2, current_data, config)
     
     # Prüfen ob Variablen existieren (mit Matrix-Ausnahme)
+    error_msg <- NULL
     if (!var1_is_matrix && !var1 %in% names(current_data)) {
-      cat("WARNUNG: Variable", var1, "nicht gefunden für", analysis_name, "\n")
-      next
+      error_msg <- paste("Variable", var1, "nicht in Daten gefunden")
     }
     if (!var2_is_matrix && !var2 %in% names(current_data)) {
-      cat("WARNUNG: Variable", var2, "nicht gefunden für", analysis_name, "\n")
-      next
+      error_msg <- paste("Variable", var2, "nicht in Daten gefunden")
     }
     
     # Spezialfall: Beide normal aber eine nicht gefunden
     if (!var1_is_matrix && !var2_is_matrix && (!var1 %in% names(current_data) || !var2 %in% names(current_data))) {
-      cat("WARNUNG: Variable(n) nicht gefunden für", analysis_name, "\n")
+      error_msg <- "Mindestens eine Variable nicht in Daten gefunden"
+    }
+    
+    if (!is.null(error_msg)) {
+      cat("  ❌ FEHLER:", error_msg, "\n")
+      errors[[analysis_name]] <- list(
+        type = "error",
+        analysis_name = analysis_name,
+        var1 = var1,
+        var2 = var2,
+        error_message = error_msg
+      )
       next
     }
     
@@ -4335,6 +5602,11 @@ create_crosstabs <- function(prepared_data) {
   }
   
   cat("Kreuztabellen für", length(results), "Analysen erstellt.\n")
+  if (length(errors) > 0) {
+    cat("⚠ ", length(errors), " Fehler bei Kreuztabellen-Erstellung aufgetreten.\n")
+    # Speichere Fehler in results-Liste
+    results$".errors." <- errors
+  }
   return(results)
 }
 
@@ -4383,8 +5655,8 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
   result <- tryCatch({
     switch(test_type,
            "chi_square" = perform_chi_square_test(complete_data, var1, var2, survey_obj),
-           "t_test" = perform_t_test_safe(complete_data, var1, var2, var1_type, var2_type, survey_obj),
-           "anova" = perform_anova_test_safe(complete_data, var1, var2, var1_type, var2_type, survey_obj),
+           "t_test" = perform_t_test_safe(complete_data, var1, var2, var1_type, var2_type, survey_obj, config),
+           "anova" = perform_anova_test_safe(complete_data, var1, var2, var1_type, var2_type, survey_obj, config),
            "correlation" = perform_correlation_test(complete_data, var1, var2, survey_obj),
            "mann_whitney" = perform_mann_whitney_test(complete_data, var1, var2, var1_type, var2_type),
            list(test = test_type, result = "Test nicht implementiert", p_value = NA, statistic = NA)
@@ -4430,17 +5702,22 @@ perform_chi_square_test <- function(data, var1, var2, survey_obj = NULL) {
 }
 
 # T-Test
-perform_t_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_obj = NULL) {
-  # Bestimme welche Variable numerisch und welche kategorial ist
-  var1_actual_type <- detect_actual_data_type(data, var1)
-  var2_actual_type <- detect_actual_data_type(data, var2)
+perform_t_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_obj = NULL, config = NULL) {
+  # *** ERWEITERTE TYP-ERKENNUNG FÜR STATISTISCHE TESTS ***
+  var1_type_info <- detect_variable_type_advanced(var1, data, config)
+  var2_type_info <- detect_variable_type_advanced(var2, data, config)
   
-  if (var1_actual_type %in% c("numeric", "numeric_discrete") && 
-      var2_actual_type %in% c("nominal", "nominal_binary")) {
+  var1_actual_type <- var1_type_info$type
+  var2_actual_type <- var2_type_info$type
+  
+  # *** AKTUALISIERTE LOGIK: Numerisch/ordinal/dichotom mit erlaubter Konvertierung vs nominal ***
+  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var1_type_info$allow_numeric
+  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var2_type_info$allow_numeric
+  
+  if (var1_is_numeric && var2_actual_type == "nominal") {
     numeric_var <- var1
     group_var <- var2
-  } else if (var2_actual_type %in% c("numeric", "numeric_discrete") && 
-             var1_actual_type %in% c("nominal", "nominal_binary")) {
+  } else if (var2_is_numeric && var1_actual_type == "nominal") {
     numeric_var <- var2
     group_var <- var1
   } else {
@@ -4505,18 +5782,22 @@ perform_t_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_o
 }
 
 # ANOVA Test
-perform_anova_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_obj = NULL) {
-  # Verwende automatische Typ-Erkennung statt Config
-  var1_actual_type <- detect_actual_data_type(data, var1)
-  var2_actual_type <- detect_actual_data_type(data, var2)
+perform_anova_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_obj = NULL, config = NULL) {
+  # *** ERWEITERTE TYP-ERKENNUNG FÜR ANOVA ***
+  var1_type_info <- detect_variable_type_advanced(var1, data, config)
+  var2_type_info <- detect_variable_type_advanced(var2, data, config)
   
-  # Bestimme Variablen basierend auf tatsächlichen Typen
-  if (var1_actual_type %in% c("numeric", "numeric_discrete") && 
-      !var2_actual_type %in% c("numeric", "numeric_discrete")) {
+  var1_actual_type <- var1_type_info$type
+  var2_actual_type <- var2_type_info$type
+  
+  # *** AKTUALISIERTE LOGIK: Numerisch/ordinal/dichotom mit erlaubter Konvertierung ***
+  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var1_type_info$allow_numeric
+  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var2_type_info$allow_numeric
+  
+  if (var1_is_numeric && var2_actual_type == "nominal") {
     numeric_var <- var1
     group_var <- var2
-  } else if (var2_actual_type %in% c("numeric", "numeric_discrete") && 
-             !var1_actual_type %in% c("numeric", "numeric_discrete")) {
+  } else if (var2_is_numeric && var1_actual_type == "nominal") {
     numeric_var <- var2
     group_var <- var1
   } else {
@@ -5699,67 +6980,7 @@ smart_round_coefficient <- function(x, digits = 2) {
 # =============================================================================
 
 
-# DEBUG-FUNKTION: Finde alle GP05 und AS03 verwandten Variablen
-debug_missing_variables <- function(data) {
-  cat("=== DEBUG: Variablensuche ===\n")
-  
-  all_vars <- names(data)
-  
-  # 1. Suche alle GP05 ähnlichen Variablen
-  gp05_vars <- all_vars[grepl("GP05", all_vars, ignore.case = TRUE)]
-  cat("\nAlle GP05 verwandten Variablen:\n")
-  if (length(gp05_vars) > 0) {
-    for (var in gp05_vars) {
-      cat("  -", var, "\n")
-    }
-  } else {
-    cat("  Keine GP05 Variablen gefunden!\n")
-  }
-  
-  # 2. Suche alle GP Variablen überhaupt
-  gp_vars <- all_vars[grepl("^GP", all_vars, ignore.case = TRUE)]
-  cat("\nAlle GP Variablen (erste 20):\n")
-  for (var in head(gp_vars, 20)) {
-    cat("  -", var, "\n")
-  }
-  
-  # 3. Suche alle AS03 ähnlichen Variablen
-  as03_vars <- all_vars[grepl("AS03", all_vars, ignore.case = TRUE)]
-  cat("\nAlle AS03 verwandten Variablen:\n")
-  if (length(as03_vars) > 0) {
-    for (var in as03_vars) {
-      cat("  -", var, "\n")
-    }
-  } else {
-    cat("  Keine AS03 Variablen gefunden!\n")
-  }
-  
-  # 4. Suche alle "other" Variablen
-  other_vars <- all_vars[grepl("other", all_vars, ignore.case = TRUE)]
-  cat("\nAlle 'other' verwandten Variablen:\n")
-  if (length(other_vars) > 0) {
-    for (var in head(other_vars, 20)) {
-      cat("  -", var, "\n")
-    }
-  } else {
-    cat("  Keine 'other' Variablen gefunden!\n")
-  }
-  
-  # 5. Prüfe konkrete Variablennamen
-  test_vars <- c("GP05", "GP03", "AS03", "AS03.other.", "AS03_other", "AS03[other]", "GP05_text", "GP05.text.")
-  cat("\nDirekte Tests für spezifische Variablennamen:\n")
-  for (test_var in test_vars) {
-    exists <- test_var %in% all_vars
-    cat("  -", test_var, ":", if(exists) "✓ EXISTIERT" else "✗ FEHLT", "\n")
-  }
-  
-  # 6. Zeige Gesamtanzahl und Beispiele
-  cat("\nGesamtanzahl Variablen:", length(all_vars), "\n")
-  cat("Erste 30 Variablennamen:\n")
-  for (var in head(all_vars, 30)) {
-    cat("  -", var, "\n")
-  }
-}
+
 
 
 
@@ -6063,21 +7284,14 @@ create_variable_overview <- function(data, config, descriptive_results, crosstab
   overview <- data.frame(
     Variable = all_vars,
     Variable_Label = sapply(all_vars, function(var) {
-      # Erst Custom Labels prüfen
+      # Verwende zentrale Label-Extraktion
+      label <- get_variable_label(var, label_type = "short")
+      if (label != var) {
+        return(label)
+      }
+      # Fallback: Custom Labels prüfen (für Kompatibilität)
       if(!is.null(custom_var_labels) && var %in% names(custom_var_labels)) {
         return(custom_var_labels[[var]])
-      }
-      # Dann Attribut-Labels aus Daten
-      var_label <- attr(data[[var]], "label")
-      if(!is.null(var_label) && var_label != "" && var_label != var) {
-        return(var_label)
-      }
-      # Labelled-Package Labels
-      if(requireNamespace("labelled", quietly = TRUE) && labelled::is.labelled(data[[var]])) {
-        labelled_label <- labelled::var_label(data[[var]])
-        if(!is.null(labelled_label) && labelled_label != "") {
-          return(labelled_label)
-        }
       }
       return("")  # Kein Label gefunden
     }),
@@ -6146,6 +7360,84 @@ create_variable_overview <- function(data, config, descriptive_results, crosstab
   cat("Variablen-Übersicht erstellt für", nrow(overview), "Variablen\n")
   
   return(overview)
+}
+
+# Fehler und Warnungen exportieren
+export_errors_and_warnings <- function(wb, descriptive_results, crosstab_results, regression_results, header_style, table_style, title_style) {
+  # Sammle alle Fehler
+  all_errors <- data.frame(
+    Bereich = character(),
+    Typ = character(),
+    Variable = character(),
+    Fehlermeldung = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Fehler aus deskriptiven Statistiken
+  if (!is.null(descriptive_results)) {
+    for (var_name in names(descriptive_results)) {
+      result <- descriptive_results[[var_name]]
+      if (!is.null(result) && "type" %in% names(result) && result$type == "error") {
+        error_msg_full <- result$error_message
+        if (!is.null(result$error_trace) && nchar(result$error_trace) > 0) {
+          error_msg_full <- paste(error_msg_full, "\n[", result$error_trace, "]")
+        }
+        all_errors <- rbind(all_errors, data.frame(
+          Bereich = "Deskriptive Statistiken",
+          Typ = result$error_class,
+          Variable = var_name,
+          Fehlermeldung = error_msg_full,
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+  }
+  
+  # Fehler aus Kreuztabellen
+  if (!is.null(crosstab_results) && ".errors." %in% names(crosstab_results)) {
+    errors_list <- crosstab_results$".errors."
+    for (analysis_name in names(errors_list)) {
+      error <- errors_list[[analysis_name]]
+      all_errors <- rbind(all_errors, data.frame(
+        Bereich = "Kreuztabellen",
+        Typ = "Verarbeitungsfehler",
+        Variable = paste(error$var1, "x", error$var2),
+        Fehlermeldung = error$error_message,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  
+  # Nur wenn Fehler vorhanden
+  if (nrow(all_errors) > 0) {
+    addWorksheet(wb, "Fehler_Warnungen")
+    
+    current_row <- 1
+    
+    # Titel
+    writeData(wb, "Fehler_Warnungen", "Fehler und Warnungen", startRow = current_row)
+    addStyle(wb, "Fehler_Warnungen", title_style, rows = current_row, cols = 1)
+    current_row <- current_row + 2
+    
+    # Info
+    writeData(wb, "Fehler_Warnungen", 
+              paste("Folgende", nrow(all_errors), "Analysen konnten nicht erstellt werden:"),
+              startRow = current_row)
+    current_row <- current_row + 2
+    
+    # Tabelle
+    writeData(wb, "Fehler_Warnungen", all_errors, startRow = current_row, colNames = TRUE)
+    addStyle(wb, "Fehler_Warnungen", header_style, rows = current_row, cols = 1:ncol(all_errors))
+    addStyle(wb, "Fehler_Warnungen", table_style, 
+             rows = (current_row + 1):(current_row + nrow(all_errors)), 
+             cols = 1:ncol(all_errors), gridExpand = TRUE)
+    
+    # Spaltenbreiten
+    setColWidths(wb, "Fehler_Warnungen", cols = 1, widths = 20)
+    setColWidths(wb, "Fehler_Warnungen", cols = 2, widths = 15)
+    setColWidths(wb, "Fehler_Warnungen", cols = 3, widths = 25)
+    setColWidths(wb, "Fehler_Warnungen", cols = 4, widths = 40)
+  }
 }
 
 # Variablen-Übersicht exportieren
@@ -6245,7 +7537,10 @@ export_results <- function(descriptive_results, crosstab_results, regression_res
     export_text_responses(wb, text_results, header_style, table_style, title_style)
   }
   
-  # Sheet 6: Variablen-Übersicht (NEU)
+  # Sheet 6: Fehler und Warnungen (NEU)
+  export_errors_and_warnings(wb, descriptive_results, crosstab_results, regression_results, header_style, table_style, title_style)
+  
+  # Sheet 7: Variablen-Übersicht (verschoben)
   export_variable_overview(wb, variable_overview, header_style, table_style, title_style)
   
   # Excel-Datei speichern
@@ -6266,6 +7561,38 @@ export_descriptive_statistics <- function(wb, descriptive_results, header_style,
   
   for (var_name in names(descriptive_results)) {
     result <- descriptive_results[[var_name]]
+    
+    # NEUE FEHLERBEHANDLUNG - prüfe NULL zuerst
+    if (is.null(result)) {
+      next
+    }
+    
+    if ("type" %in% names(result) && result$type == "error") {
+      # Fehler-Hinweis schreiben
+      error_style <- createStyle(fgFill = "#FFE699", fontColour = "#FF0000", textDecoration = "bold")
+      writeData(wb, "Deskriptive_Statistiken", 
+                paste("❌ Variable:", var_name), 
+                startRow = current_row)
+      addStyle(wb, "Deskriptive_Statistiken", error_style, rows = current_row, cols = 1)
+      current_row <- current_row + 1
+      
+      writeData(wb, "Deskriptive_Statistiken", 
+                paste("FEHLER:", result$error_message),
+                startRow = current_row)
+      addStyle(wb, "Deskriptive_Statistiken", error_style, rows = current_row, cols = 1)
+      current_row <- current_row + 1
+      
+      # Trace Info wenn vorhanden
+      if (!is.null(result$error_trace) && nchar(result$error_trace) > 0) {
+        writeData(wb, "Deskriptive_Statistiken", 
+                  paste("Fehlerort:", result$error_trace),
+                  startRow = current_row)
+        current_row <- current_row + 1
+      }
+      
+      current_row <- current_row + 1
+      next
+    }
     
     # Variable Überschrift
     writeData(wb, "Deskriptive_Statistiken", 
@@ -6388,7 +7715,34 @@ export_crosstabs <- function(wb, crosstab_results, header_style, table_style, ti
   current_row <- current_row + 2
   
   for (analysis_name in names(crosstab_results)) {
+    # Überspringe spezielle Einträge (wie ".errors.")
+    if (analysis_name == ".errors.") {
+      next
+    }
+    
     result <- crosstab_results[[analysis_name]]
+    
+    # NEUE FEHLERBEHANDLUNG - prüfe NULL zuerst
+    if (is.null(result)) {
+      next
+    }
+    
+    if ("type" %in% names(result) && result$type == "error") {
+      # Fehler-Hinweis schreiben
+      error_style <- createStyle(fgFill = "#FFE699", fontColour = "#FF0000", textDecoration = "bold")
+      writeData(wb, "Kreuztabellen", 
+                paste("❌ Analyse:", analysis_name), 
+                startRow = current_row)
+      addStyle(wb, "Kreuztabellen", error_style, rows = current_row, cols = 1)
+      current_row <- current_row + 1
+      
+      writeData(wb, "Kreuztabellen", 
+                paste("FEHLER:", result$error_message),
+                startRow = current_row)
+      addStyle(wb, "Kreuztabellen", error_style, rows = current_row, cols = 1)
+      current_row <- current_row + 2
+      next
+    }
     
     # Analyse Überschrift
     writeData(wb, "Kreuztabellen", 
@@ -6913,116 +8267,134 @@ main <- function() {
     setup_logging()  # Verwendet OUTPUT_FILE Verzeichnis + Zeitstempel
   }
   
-  cat("=============================================================================\n")
-  cat("SURVEY DATENAUSWERTUNG - START\n")
-  cat("=============================================================================\n")
-  
-  # 1. Setup
-  cat("\n1. SETUP\n")
-  cat("---------\n")
-  load_packages()
-  
-  # 2. Konfiguration laden
-  cat("\n2. KONFIGURATION LADEN\n")
-  cat("-----------------------\n")
-  config <- load_config()
-  
-  # 3. Daten laden und vorbereiten
-  cat("\n3. DATEN LADEN UND VORBEREITEN\n")
-  cat("-------------------------------\n")
-  prepared_data <- load_and_prepare_data(config, index_definitions, custom_var_labels, custom_val_labels)
-  
-  # 4. Deskriptive Analysen
-  cat("\n4. DESKRIPTIVE STATISTIKEN\n")
-  cat("---------------------------\n")
-  descriptive_results <- create_descriptive_tables(prepared_data)
-  
-  # 5. Ergebnisse anzeigen (vorläufig)
-  cat("\n5. ERGEBNISSE (VORSCHAU)\n")
-  cat("-------------------------\n")
-  for (var_name in names(descriptive_results)) {
-    result <- descriptive_results[[var_name]]
-    cat("\nVariable:", var_name, "(", result$type, ")\n")
-    cat("Frage:", result$question, "\n")
-    cat("Gewichtet:", result$weighted, "\n")
-    
-    if (result$type %in% c("ordinal") && "table_frequencies" %in% names(result)) {
-      cat("Häufigkeiten:\n")
-      print(result$table_frequencies)
-      cat("Numerische Kennwerte:\n")
-      print(result$table_numeric)
-      
-    } else if (result$type == "matrix") {
-      cat("Matrix mit", result$n_items, "Items:\n")
-      print(result$table)
-      
-    } else if (result$type == "matrix_ordinal") {
-      cat("Ordinale Matrix mit", result$n_items, "Items:\n")
-      cat("Kategoriale Häufigkeiten:\n")
-      print(result$table_categorical)
-      cat("Numerische Kennwerte:\n")
-      print(result$table_numeric)
-      
-    } else if (result$type == "matrix_dichotomous") {
-      cat("Dichotome Matrix mit", result$n_items, "Items:\n")
-      cat("Kategoriale Häufigkeiten:\n")
-      print(result$table_categorical)
-      cat("Numerische Kennwerte:\n")
-      print(result$table_numeric)
-      
-    } else {
-      print(result$table)
-    }
-    cat("\n", rep("-", 50), "\n")
-  }
-  # 5. Kreuztabellen
-  cat("\n5. KREUZTABELLEN\n")
-  cat("----------------\n")
-  crosstab_results <- create_crosstabs(prepared_data)
-  
-  # 6. Regressionen
-  cat("\n6. REGRESSIONSANALYSEN\n")
-  cat("----------------------\n")
-  regression_results <- run_regressions(prepared_data)
-  
-  # 7. Textantworten - NEUE ERGÄNZUNG
-  cat("\n7. TEXTANTWORTEN\n")
-  cat("----------------\n")
-  text_results <- process_text_responses(prepared_data, custom_val_labels)
-  
-  # 8. Export (Nummer angepasst)
-  cat("\n8. EXCEL EXPORT\n")
-  cat("---------------\n")
-  
-  # Variablen-Übersicht erstellen
-  cat("Erstelle Variablen-Übersicht...\n")
-  variable_overview <- create_variable_overview(
-    prepared_data$data, 
-    prepared_data$config, 
-    descriptive_results, 
-    crosstab_results, 
-    regression_results,
-    text_results,
-    custom_var_labels
-  )
-  
-  # Excel Export mit allen Ergebnissen
-  export_results(
-    descriptive_results, 
-    crosstab_results, 
-    regression_results, 
-    text_results, 
-    variable_overview
-  )
-  
-  # *** FINALEN DATENSATZ SPEICHERN ***
-  save_final_dataset(prepared_data$data, prepared_data$config)
-  
-  # *** LOGGING BEENDEN ***
-  if (exists("LOG") && LOG == TRUE) {
-    cat("\n=============================================================================\n")
-    cat("SURVEY DATENAUSWERTUNG - ABGESCHLOSSEN\n")
+  # Wrap gesamte Analyse in tryCatch um sicherzustellen dass Log korrekt beendet wird
+  tryCatch({
     cat("=============================================================================\n")
-    close_logging()
-  }
+    cat("SURVEY DATENAUSWERTUNG - START\n")
+    cat("=============================================================================\n")
+    
+    # 1. Setup
+    cat("\n1. SETUP\n")
+    cat("---------\n")
+    load_packages()
+    
+    # 2. Konfiguration laden
+    cat("\n2. KONFIGURATION LADEN\n")
+    cat("-----------------------\n")
+    config <- load_config()
+    
+    # 3. Daten laden und vorbereiten
+    cat("\n3. DATEN LADEN UND VORBEREITEN\n")
+    cat("-------------------------------\n")
+    prepared_data <- load_and_prepare_data(config, index_definitions, custom_var_labels, custom_val_labels)
+    
+    # 4. Deskriptive Analysen
+    cat("\n4. DESKRIPTIVE STATISTIKEN\n")
+    cat("---------------------------\n")
+    descriptive_results <- create_descriptive_tables(prepared_data)
+    
+    # 5. Ergebnisse anzeigen (vorläufig)
+    cat("\n5. ERGEBNISSE (VORSCHAU)\n")
+    cat("-------------------------\n")
+    for (var_name in names(descriptive_results)) {
+      result <- descriptive_results[[var_name]]
+      cat("\nVariable:", var_name, "(", result$type, ")\n")
+      cat("Frage:", result$question, "\n")
+      cat("Gewichtet:", result$weighted, "\n")
+      
+      if (result$type %in% c("ordinal") && "table_frequencies" %in% names(result)) {
+        cat("Häufigkeiten:\n")
+        print(result$table_frequencies)
+        cat("Numerische Kennwerte:\n")
+        print(result$table_numeric)
+        
+      } else if (result$type == "matrix") {
+        cat("Matrix mit", result$n_items, "Items:\n")
+        print(result$table)
+        
+      } else if (result$type == "matrix_ordinal") {
+        cat("Ordinale Matrix mit", result$n_items, "Items:\n")
+        cat("Kategoriale Häufigkeiten:\n")
+        print(result$table_categorical)
+        cat("Numerische Kennwerte:\n")
+        print(result$table_numeric)
+        
+      } else if (result$type == "matrix_dichotomous") {
+        cat("Dichotome Matrix mit", result$n_items, "Items:\n")
+        cat("Kategoriale Häufigkeiten:\n")
+        print(result$table_categorical)
+        cat("Numerische Kennwerte:\n")
+        print(result$table_numeric)
+        
+      } else {
+        print(result$table)
+      }
+      cat("\n", rep("-", 50), "\n")
+    }
+    # 5. Kreuztabellen
+    cat("\n5. KREUZTABELLEN\n")
+    cat("----------------\n")
+    crosstab_results <- create_crosstabs(prepared_data)
+    
+    # 6. Regressionen
+    cat("\n6. REGRESSIONSANALYSEN\n")
+    cat("----------------------\n")
+    regression_results <- run_regressions(prepared_data)
+    
+    # 7. Textantworten - NEUE ERGÄNZUNG
+    cat("\n7. TEXTANTWORTEN\n")
+    cat("----------------\n")
+    text_results <- process_text_responses(prepared_data, custom_val_labels)
+    
+    # 8. Export (Nummer angepasst)
+    cat("\n8. EXCEL EXPORT\n")
+    cat("---------------\n")
+    
+    # Variablen-Übersicht erstellen
+    cat("Erstelle Variablen-Übersicht...\n")
+    variable_overview <- create_variable_overview(
+      prepared_data$data, 
+      prepared_data$config, 
+      descriptive_results, 
+      crosstab_results, 
+      regression_results,
+      text_results,
+      custom_var_labels
+    )
+    
+    # Excel Export mit allen Ergebnissen
+    export_results(
+      descriptive_results, 
+      crosstab_results, 
+      regression_results, 
+      text_results, 
+      variable_overview
+    )
+    
+    # *** FINALEN DATENSATZ SPEICHERN ***
+    save_final_dataset(prepared_data$data, prepared_data$config)
+    
+    # *** LOGGING BEENDEN - NUR BEI ERFOLG ***
+    if (exists("LOG") && LOG == TRUE) {
+      cat("\n=============================================================================\n")
+      cat("SURVEY DATENAUSWERTUNG - ABGESCHLOSSEN\n")
+      cat("=============================================================================\n")
+      close_logging()
+    }
+  }, error = function(e) {
+    # Bei Fehler: Log-Fehler ausgeben und dann Log beenden
+    cat("\n\n!!! FEHLER WÄHREND ANALYSE !!!\n")
+    cat("Fehlertyp:", class(e)[1], "\n")
+    cat("Fehlermeldung:", e$message, "\n")
+    cat("Stack Trace:\n")
+    print(e)
+    
+    # *** LOGGING AUCH BEI FEHLER BEENDEN ***
+    if (exists("LOG") && LOG == TRUE) {
+      cat("\n=============================================================================\n")
+      cat("SURVEY DATENAUSWERTUNG - ABGEBROCHEN DURCH FEHLER\n")
+      cat("=============================================================================\n")
+      close_logging()
+    }
+  })
 }
