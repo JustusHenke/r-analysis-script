@@ -2299,7 +2299,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     stats <- tryCatch({
       list(
         n = nrow(survey_obj_filtered$variables),
-        mean = as.numeric(svymean(as.formula(paste("~", var_name)), survey_obj_filtered, na.rm = !use_na)),
+        mean = as.numeric(svymean(as.formula(paste("~", var_name)), survey_obj_filtered, na.rm = !use_na))[[1]],
         median = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0.5, na.rm = !use_na)[[1]][1]),
         q1 = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0.25, na.rm = !use_na)[[1]][1]),
         q3 = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0.75, na.rm = !use_na)[[1]][1]),
@@ -2312,7 +2312,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
       cat("Verwende ungewichtete Statistiken als Fallback\n")
       
       # Fallback: Ungewichtete Statistiken
-      values <- data_filtered[[var_name]]
+      values <- as.numeric(data_filtered[[var_name]])
       if (!use_na) values <- values[!is.na(values)]
       
       list(
@@ -2328,7 +2328,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     })
   } else {
     # Ungewichtete Statistiken
-    values <- data_filtered[[var_name]]
+    values <- as.numeric(data_filtered[[var_name]])
     if (!use_na) values <- values[!is.na(values)]
     
     stats <- list(
@@ -2359,13 +2359,13 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     Kennwert = c("N", "Mittelwert", "Median", "Q1", "Q3", "Minimum", "Maximum", "Standardabweichung"),
     Wert = c(
       stats$n,
-      round(stats$mean, DIGITS_ROUND),
-      round(stats$median, DIGITS_ROUND),
-      round(stats$q1, DIGITS_ROUND),
-      round(stats$q3, DIGITS_ROUND),
-      round(stats$min, DIGITS_ROUND),
-      round(stats$max, DIGITS_ROUND),
-      round(stats$sd, DIGITS_ROUND)
+      round(as.numeric(stats$mean), DIGITS_ROUND),
+      round(as.numeric(stats$median), DIGITS_ROUND),
+      round(as.numeric(stats$q1), DIGITS_ROUND),
+      round(as.numeric(stats$q3), DIGITS_ROUND),
+      round(as.numeric(stats$min), DIGITS_ROUND),
+      round(as.numeric(stats$max), DIGITS_ROUND),
+      round(as.numeric(stats$sd), DIGITS_ROUND)
     ),
     stringsAsFactors = FALSE
   )
@@ -3559,8 +3559,8 @@ create_matrix_numeric_crosstab <- function(data, matrix_vars, group_var, unique_
       numeric_values <- rep(NA, length(var_data))
       
       for (i in seq_along(var_data)) {
-        if (!is.na(var_data[i]) && var_data[i] != "") {
-          value <- as.character(var_data[i])
+        value <- as.character(var_data[i])
+        if (!is.na(var_data[i]) && value != "") {
           
           # Extrahiere Zahl am Anfang
           if (str_detect(value, "^\\d+")) {
@@ -4004,20 +4004,42 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
           max_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 1, na.rm = TRUE)
           var_result <- svyvar(as.formula(paste("~", numeric_var)), group_survey, na.rm = TRUE)
           
+          # Sichere Konvertierung zu numerisch - prüfe Länge
+          mean_val <- suppressWarnings(as.numeric(mean_result[1]))
+          if (is.na(mean_val)) mean_val <- NA
+          
+          median_val <- suppressWarnings(as.numeric(median_result[1]))
+          if (is.na(median_val)) median_val <- NA
+          
+          q1_val <- suppressWarnings(as.numeric(q1_result[1]))
+          if (is.na(q1_val)) q1_val <- NA
+          
+          q3_val <- suppressWarnings(as.numeric(q3_result[1]))
+          if (is.na(q3_val)) q3_val <- NA
+          
+          min_val <- suppressWarnings(as.numeric(min_result[1]))
+          if (is.na(min_val)) min_val <- NA
+          
+          max_val <- suppressWarnings(as.numeric(max_result[1]))
+          if (is.na(max_val)) max_val <- NA
+          
+          sd_val <- suppressWarnings(as.numeric(sqrt(var_result[1])))
+          if (is.na(sd_val)) sd_val <- NA
+          
           stats_list[[as.character(group)]] <- list(
             n = nrow(group_survey$variables),
-            mean = as.numeric(mean_result)[1],
-            median = as.numeric(as.vector(median_result[[1]])[1]),
-            q1 = as.numeric(as.vector(q1_result[[1]])[1]),
-            q3 = as.numeric(as.vector(q3_result[[1]])[1]),
-            min = as.numeric(as.vector(min_result[[1]])[1]),
-            max = as.numeric(as.vector(max_result[[1]])[1]),
-            sd = as.numeric(sqrt(as.vector(var_result)[1]))
+            mean = mean_val,
+            median = median_val,
+            q1 = q1_val,
+            q3 = q3_val,
+            min = min_val,
+            max = max_val,
+            sd = sd_val
           )
         }, error = function(e) {
           cat("WARNUNG: Fehler bei Survey-Statistiken für Gruppe", as.character(group), ":", e$message, "\n")
           # Fallback auf ungewichtete Statistiken
-          group_data <- data_for_survey[data_for_survey[[group_var]] == group & !is.na(data_for_survey[[group_var]]), numeric_var]
+          group_data <- as.numeric(data_for_survey[[numeric_var]][data_for_survey[[group_var]] == group & !is.na(data_for_survey[[group_var]])])
           group_data <- group_data[!is.na(group_data)]
           
           if (length(group_data) > 0) {
@@ -4042,7 +4064,7 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
     groups <- sort(unique_groups)
     
     for (group in groups) {
-      group_data <- data[data[[group_var]] == group & !is.na(data[[group_var]]), numeric_var]
+      group_data <- as.numeric(data[[numeric_var]][data[[group_var]] == group & !is.na(data[[group_var]])])
       group_data <- group_data[!is.na(group_data)]
       
       if (length(group_data) > 0) {
@@ -4079,13 +4101,13 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
     group_stats_df <- rbind(group_stats_df, data.frame(
       Gruppe = group_name,
       N = stats$n,
-      Mittelwert = round(stats$mean, DIGITS_ROUND),
-      Median = round(stats$median, DIGITS_ROUND),
-      Q1 = round(stats$q1, DIGITS_ROUND),
-      Q3 = round(stats$q3, DIGITS_ROUND),
-      Min = round(stats$min, DIGITS_ROUND),
-      Max = round(stats$max, DIGITS_ROUND),
-      Standardabweichung = round(stats$sd, DIGITS_ROUND),
+      Mittelwert = round(as.numeric(stats$mean), DIGITS_ROUND),
+      Median = round(as.numeric(stats$median), DIGITS_ROUND),
+      Q1 = round(as.numeric(stats$q1), DIGITS_ROUND),
+      Q3 = round(as.numeric(stats$q3), DIGITS_ROUND),
+      Min = round(as.numeric(stats$min), DIGITS_ROUND),
+      Max = round(as.numeric(stats$max), DIGITS_ROUND),
+      Standardabweichung = round(as.numeric(stats$sd), DIGITS_ROUND),
       stringsAsFactors = FALSE
     ))
   }
@@ -4102,20 +4124,42 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
       total_max <- svyquantile(as.formula(paste("~", numeric_var)), survey_complete, 1, na.rm = TRUE)
       total_var <- svyvar(as.formula(paste("~", numeric_var)), survey_complete, na.rm = TRUE)
       
+      # Sichere Konvertierung zu numerisch
+      total_mean_val <- suppressWarnings(as.numeric(total_mean[1]))
+      if (is.na(total_mean_val)) total_mean_val <- NA
+      
+      total_median_val <- suppressWarnings(as.numeric(total_median[1]))
+      if (is.na(total_median_val)) total_median_val <- NA
+      
+      total_q1_val <- suppressWarnings(as.numeric(total_q1[1]))
+      if (is.na(total_q1_val)) total_q1_val <- NA
+      
+      total_q3_val <- suppressWarnings(as.numeric(total_q3[1]))
+      if (is.na(total_q3_val)) total_q3_val <- NA
+      
+      total_min_val <- suppressWarnings(as.numeric(total_min[1]))
+      if (is.na(total_min_val)) total_min_val <- NA
+      
+      total_max_val <- suppressWarnings(as.numeric(total_max[1]))
+      if (is.na(total_max_val)) total_max_val <- NA
+      
+      total_sd_val <- suppressWarnings(as.numeric(sqrt(total_var[1])))
+      if (is.na(total_sd_val)) total_sd_val <- NA
+      
       total_stats <- list(
         n = nrow(survey_complete$variables),
-        mean = as.numeric(total_mean)[1],
-        median = as.numeric(as.vector(total_median[[1]])[1]),
-        q1 = as.numeric(as.vector(total_q1[[1]])[1]),
-        q3 = as.numeric(as.vector(total_q3[[1]])[1]),
-        min = as.numeric(as.vector(total_min[[1]])[1]),
-        max = as.numeric(as.vector(total_max[[1]])[1]),
-        sd = as.numeric(sqrt(as.vector(total_var)[1]))
+        mean = total_mean_val,
+        median = total_median_val,
+        q1 = total_q1_val,
+        q3 = total_q3_val,
+        min = total_min_val,
+        max = total_max_val,
+        sd = total_sd_val
       )
     }, error = function(e) {
       cat("WARNUNG: Fehler bei gewichteten Gesamt-Statistiken:", e$message, "\n")
       cat("Fallback auf ungewichtete Statistiken\n")
-      all_values <- data_for_survey[[numeric_var]][!is.na(data_for_survey[[numeric_var]])]
+      all_values <- as.numeric(data_for_survey[[numeric_var]][!is.na(data_for_survey[[numeric_var]])])
       total_stats <<- list(
         n = length(all_values),
         mean = mean(all_values, na.rm = TRUE),
@@ -4128,7 +4172,7 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
       )
     })
   } else {
-    all_values <- data[[numeric_var]][!is.na(data[[numeric_var]])]
+    all_values <- as.numeric(data[[numeric_var]][!is.na(data[[numeric_var]])])
     total_stats <- list(
       n = length(all_values),
       mean = mean(all_values, na.rm = TRUE),
@@ -4144,13 +4188,13 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   group_stats_df <- rbind(group_stats_df, data.frame(
     Gruppe = "Gesamt",
     N = total_stats$n,
-    Mittelwert = round(total_stats$mean, DIGITS_ROUND),
-    Median = round(total_stats$median, DIGITS_ROUND),
-    Q1 = round(total_stats$q1, DIGITS_ROUND),
-    Q3 = round(total_stats$q3, DIGITS_ROUND),
-    Min = round(total_stats$min, DIGITS_ROUND),
-    Max = round(total_stats$max, DIGITS_ROUND),
-    Standardabweichung = round(total_stats$sd, DIGITS_ROUND),
+    Mittelwert = round(as.numeric(total_stats$mean), DIGITS_ROUND),
+    Median = round(as.numeric(total_stats$median), DIGITS_ROUND),
+    Q1 = round(as.numeric(total_stats$q1), DIGITS_ROUND),
+    Q3 = round(as.numeric(total_stats$q3), DIGITS_ROUND),
+    Min = round(as.numeric(total_stats$min), DIGITS_ROUND),
+    Max = round(as.numeric(total_stats$max), DIGITS_ROUND),
+    Standardabweichung = round(as.numeric(total_stats$sd), DIGITS_ROUND),
     stringsAsFactors = FALSE
   ))
   
