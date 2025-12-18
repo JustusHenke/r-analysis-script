@@ -17,6 +17,7 @@
 #   • FIX: Survey object recreation for weighted analysis after normalization
 #   • FIX: Enhanced label mapping for converted numeric values (Pattern 5)
 #   • FIX: Weighted numeric statistics in matrix tables (consistency with categorical)
+#   • ENHANCEMENT: Generates global codebook from labelled data
 #   • ENHANCEMENT: Ordinal vs nominal AO-codes detection (IV02 vs SA07)
 #   • ENHANCEMENT: Haven_labelled mixed response conversion (ordinal + "Weiß nicht")
 # 
@@ -39,7 +40,6 @@
 # v1.1.0 (Vorherige Phase)
 #   • Redundancy elimination: 250 Zeilen duplizierter Code entfernt (74%)
 #   • Helper functions: get_matrix_labels(), map_response_labels()
-#   • Dokumentation: CRUSH.md, REFACTORING_SUMMARY.md
 # ─────────────────────────────────────────────────────────────────────────
 
 # =============================================================================
@@ -397,7 +397,58 @@ detect_variable_type_advanced <- function(var_name, data, config = NULL) {
   }
   
   # *** NEUE FALLBACK-REGELN FÜR CUSTOM VARIABLES OHNE CONFIG ***
-  # Prüfe ob alle Werte numerisch konvertierbar sind
+  
+  # REGEL 5: DICHOTOM - Erweiterte Erkennung für verschiedene Muster
+  if (n_unique == 2) {
+    # Prüfe verschiedene dichotome Muster
+    sorted_values <- sort(unique_values)
+    
+    # Muster 1: Numerische Werte (1/0, Y/N als Zahlen, etc.)
+    numeric_values <- suppressWarnings(as.numeric(unique_values))
+    if (!any(is.na(numeric_values))) {
+      sorted_numeric <- sort(numeric_values)
+      if ((sorted_numeric[1] == 0 && sorted_numeric[2] == 1) || 
+          (sorted_numeric[1] == 1 && sorted_numeric[2] == 2) ||
+          (diff(sorted_numeric) == 1)) {  # Aufeinanderfolgende Zahlen
+        cat("   ✅ DICHOTOM: 2 numerische Werte (", paste(sorted_numeric, collapse = ", "), ")\n")
+        return(list(
+          type = "dichotomous",
+          reason = paste("2 numerische Werte:", paste(sorted_numeric, collapse = ", ")),
+          allow_numeric = TRUE,
+          config_info = config_info,
+          labels = labels
+        ))
+      }
+    }
+    
+    # Muster 2: Y/N, J/N Muster
+    if (all(sorted_values %in% c("Y", "N")) || 
+        all(sorted_values %in% c("J", "N")) ||
+        all(sorted_values %in% c("y", "n")) ||
+        all(sorted_values %in% c("j", "n"))) {
+      cat("   ✅ DICHOTOM: Y/N oder J/N Muster (", paste(sorted_values, collapse = ", "), ")\n")
+      return(list(
+        type = "dichotomous",
+        reason = paste("Y/N oder J/N Muster:", paste(sorted_values, collapse = ", ")),
+        allow_numeric = TRUE,
+        config_info = config_info,
+        labels = labels
+      ))
+    }
+    
+    # Muster 3: Nominale Merkmale mit nur 2 Kategorien (z.B. "männlich/weiblich")
+    # Diese werden als dichotom erkannt, können aber auch numerisch behandelt werden
+    cat("   ✅ DICHOTOM: 2 Kategorien (", paste(sorted_values, collapse = ", "), ") - Nominales Merkmal\n")
+    return(list(
+      type = "dichotomous",
+      reason = paste("2 Kategorien (nominales Merkmal):", paste(sorted_values, collapse = ", ")),
+      allow_numeric = TRUE,  # Ermöglicht zusätzliche numerische Tabelle
+      config_info = config_info,
+      labels = labels
+    ))
+  }
+  
+  # Prüfe ob alle Werte numerisch konvertierbar sind (für weitere Regeln)
   if (is.null(labels) || length(labels) == 0) {
     # *** FIX: Handle haven_labelled data properly ***
     char_values_fallback <- if (inherits(unique_values, "haven_labelled")) {
@@ -410,22 +461,6 @@ detect_variable_type_advanced <- function(var_name, data, config = NULL) {
     all_numeric <- !any(is.na(numeric_values))
     
     if (all_numeric) {
-      # REGEL 5: DICHOTOM - Genau 2 numerische Werte (0,1 oder 1,2)
-      if (n_unique == 2) {
-        sorted_values <- sort(numeric_values)
-        if ((sorted_values[1] == 0 && sorted_values[2] == 1) || 
-            (sorted_values[1] == 1 && sorted_values[2] == 2) ||
-            (diff(sorted_values) == 1)) {  # Aufeinanderfolgende Zahlen
-          cat("   ✅ DICHOTOM: 2 numerische Werte (", paste(sorted_values, collapse = ", "), ") - Custom Variable\n")
-          return(list(
-            type = "dichotomous",
-            reason = paste("2 numerische Werte:", paste(sorted_values, collapse = ", ")),
-            allow_numeric = TRUE,
-            config_info = config_info,
-            labels = labels
-          ))
-        }
-      }
       
       # REGEL 6: NOMINAL - 3-15 numerische Werte ohne Labels
       if (n_unique >= 3 && n_unique <= 15) {
@@ -3552,10 +3587,51 @@ create_ordinal_table <- function(data, var_config, use_na, survey_obj = NULL) {
 
 # Deskriptive Tabelle für dichotome Variablen
 create_dichotom_table <- function(data, var_config, use_na, survey_obj = NULL) {
-  # Behandle wie nominal_coded aber mit spezieller Kennzeichnung
-  result <- create_nominal_coded_table(data, var_config, use_na, survey_obj)
-  result$type <- "dichotom"
-  return(result)
+  var_name <- var_config$variable_name
+  question_text <- var_config$question_text
+  
+  # NEUER FIX: Prüfe ob Variable existiert und gültige Daten hat
+  if (!var_name %in% names(data)) {
+    cat("WARNUNG: Variable", var_name, "nicht in Daten gefunden\n")
+    return(NULL)
+  }
+  
+  # Prüfe ob genügend gültige Daten vorhanden sind
+  valid_data <- data[[var_name]][!is.na(data[[var_name]])]
+  if (length(valid_data) == 0) {
+    cat("WARNUNG: Keine gültigen Daten für Variable", var_name, "\n")
+    return(NULL)
+  }
+  
+  tryCatch({
+    # Häufigkeitstabelle erstellen (kategoriale Behandlung)
+    freq_result <- create_nominal_coded_table(data, var_config, use_na, survey_obj)
+    
+    # Zusätzlich numerische Statistiken für dichotome Variable (falls numerische Version existiert)
+    var_name_num <- paste0(var_name, "_num")
+    if (var_name_num %in% names(data)) {
+      numeric_result <- create_numeric_table(data, var_name_num, question_text, use_na, survey_obj)
+      
+      # Kombiniere beide Ergebnisse (wie bei ordinalen Variablen)
+      return(list(
+        table_frequencies = freq_result$table,
+        table_numeric = numeric_result$table,
+        variable = var_name,
+        question = question_text,
+        variable_label = get_variable_label(var_name, label_type = "short"),
+        type = "dichotom",
+        weighted = !is.null(survey_obj) && WEIGHTS
+      ))
+    }
+    
+    # Falls numerische Version nicht existiert, nur kategoriale Häufigkeiten zurückgeben
+    freq_result$type <- "dichotom"  # Typ korrigieren
+    return(freq_result)
+    
+  }, error = function(e) {
+    cat("❌ FEHLER bei dichotomer Variable", var_name, ":", e$message, "\n")
+    return(NULL)
+  })
 }
 
 
@@ -4849,9 +4925,9 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
   var1_actual_type <- var1_type_info$type
   var2_actual_type <- var2_type_info$type
   
-  cat("Erweiterte Typ-Erkennung:\n")
-  cat("  ", var1, "→", var1_actual_type, "(", var1_type_info$reason, ")\n")
-  cat("  ", var2, "→", var2_actual_type, "(", var2_type_info$reason, ")\n")
+  # cat("Erweiterte Typ-Erkennung:\n")
+  # cat("  ", var1, "→", var1_actual_type, "(", var1_type_info$reason, ")\n")
+  # cat("  ", var2, "→", var2_actual_type, "(", var2_type_info$reason, ")\n")
   
   # Daten ohne fehlende Werte für beide Variablen - ERST HIER FILTERN
   complete_data <- data[!is.na(data[[var1]]) & !is.na(data[[var2]]), ]
@@ -4870,38 +4946,39 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     var1_display <- paste0(var1, "_labeled")
     var2_display <- paste0(var2, "_labeled")
     
-    cat("Erstelle gelabelte Variablen:\n")
-    cat("  ", var1, "→", var1_display, "\n")
-    cat("  ", var2, "→", var2_display, "\n")
+    # cat("Erstelle gelabelte Variablen:\n")
+    # cat("  ", var1, "→", var1_display, "\n")
+    # cat("  ", var2, "→", var2_display, "\n")
     
     # DIREKT IN complete_data erstellen - nicht in ursprünglichen data
     complete_data[[var1_display]] <- create_labeled_factor(complete_data, var1, config)
-    cat("  var1_display Levels:", paste(levels(complete_data[[var1_display]]), collapse = ", "), "\n")
+    # cat("  var1_display Levels:", paste(levels(complete_data[[var1_display]]), collapse = ", "), "\n")
     
     complete_data[[var2_display]] <- create_labeled_factor(complete_data, var2, config)
-    cat("  var2_display Levels:", paste(levels(complete_data[[var2_display]]), collapse = ", "), "\n")
+    # cat("  var2_display Levels:", paste(levels(complete_data[[var2_display]]), collapse = ", "), "\n")
     
     cat("  ✓ Gelabelte Factors erstellt für Kreuztabelle\n")
   }
   
   # *** ENTSCHEIDUNG BASIEREND AUF ERWEITERTEN DATENTYPEN ***
-  # Numerisch behandeln: numeric, ordinal, dichotomous MIT erlaubter Konvertierung
-  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var1_type_info$allow_numeric
-  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var2_type_info$allow_numeric
+  # Numerisch behandeln: numeric, ordinal MIT erlaubter Konvertierung
+  # ÄNDERUNG: Dichotome Merkmale werden in Kreuztabellen als kategorial behandelt
+  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal")) && var1_type_info$allow_numeric
+  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal")) && var2_type_info$allow_numeric
   
-  cat("Numerische Behandlung:\n")
-  cat("  ", var1, "→ numerisch:", var1_is_numeric, "(Typ:", var1_actual_type, ", Erlaubt:", var1_type_info$allow_numeric, ")\n")
-  cat("  ", var2, "→ numerisch:", var2_is_numeric, "(Typ:", var2_actual_type, ", Erlaubt:", var2_type_info$allow_numeric, ")\n")
+  # cat("Numerische Behandlung:\n")
+  # cat("  ", var1, "→ numerisch:", var1_is_numeric, "(Typ:", var1_actual_type, ", Erlaubt:", var1_type_info$allow_numeric, ")\n")
+  # cat("  ", var2, "→ numerisch:", var2_is_numeric, "(Typ:", var2_actual_type, ", Erlaubt:", var2_type_info$allow_numeric, ")\n")
   
   # NEUER FIX: Factor-zu-Numerisch Konvertierung für "numeric_discrete"
   if (var1_is_numeric && is.factor(complete_data[[var1]])) {
-    cat("→ Konvertiere Factor", var1, "zu numerisch (erkannt als", var1_actual_type, ")\n")
-    complete_data[[var1]] <- convert_factor_to_numeric_safe(complete_data[[var1]], var1)
+    # cat("→ Konvertiere Factor", var1, "zu numerisch (erkannt als", var1_actual_type, ")\n")
+    complete_data[[var1]] <- convert_factor_to_numeric_safe(complete_data[[var1]], var1, config)
   }
   
   if (var2_is_numeric && is.factor(complete_data[[var2]])) {
-    cat("→ Konvertiere Factor", var2, "zu numerisch (erkannt als", var2_actual_type, ")\n")
-    complete_data[[var2]] <- convert_factor_to_numeric_safe(complete_data[[var2]], var2)
+    # cat("→ Konvertiere Factor", var2, "zu numerisch (erkannt als", var2_actual_type, ")\n")
+    complete_data[[var2]] <- convert_factor_to_numeric_safe(complete_data[[var2]], var2, config)
   }
   
   # Konvertiere zu numerisch falls nötig (bestehende Logik)
@@ -4953,12 +5030,43 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
   if (var1_is_numeric && !var2_is_numeric) {
     # var1 numerisch, var2 gruppierend (mit Labels)
     cat("→ Erstelle Gruppenmittelwerte:", var1, "gruppiert nach", var2, "(mit Labels)\n")
-    return(create_group_means_table(complete_data, var1, var2_display, survey_obj))
+    
+    # Versuche Gruppenmittelwerte zu erstellen, falle zurück auf kategoriale Kreuztabelle bei Fehlern
+    group_means_result <- tryCatch({
+      create_group_means_table(complete_data, var1, var2_display, survey_obj, config)
+    }, error = function(e) {
+      cat("❌ Gruppenmittelwerte fehlgeschlagen:", e$message, "\n")
+      cat("→ Fallback: Erstelle kategoriale Kreuztabelle\n")
+      NULL
+    })
+    
+    if (!is.null(group_means_result)) {
+      return(group_means_result)
+    }
+    # Fallback: Behandle beide als kategorial
+    
   } else if (var2_is_numeric && !var1_is_numeric) {
     # var2 numerisch, var1 gruppierend (mit Labels)
     cat("→ Erstelle Gruppenmittelwerte:", var2, "gruppiert nach", var1, "(mit Labels)\n")
-    return(create_group_means_table(complete_data, var2, var1_display, survey_obj))
+    
+    # Versuche Gruppenmittelwerte zu erstellen, falle zurück auf kategoriale Kreuztabelle bei Fehlern
+    group_means_result <- tryCatch({
+      create_group_means_table(complete_data, var2, var1_display, survey_obj, config)
+    }, error = function(e) {
+      cat("❌ Gruppenmittelwerte fehlgeschlagen:", e$message, "\n")
+      cat("→ Fallback: Erstelle kategoriale Kreuztabelle\n")
+      NULL
+    })
+    
+    if (!is.null(group_means_result)) {
+      return(group_means_result)
+    }
+    # Fallback: Behandle beide als kategorial
   }
+  
+  # *** NEUE LOGIK: Prüfe ob dichotome Variablen vorhanden sind für zusätzliche numerische Statistiken ***
+  var1_is_dichotomous <- (var1_actual_type == "dichotomous") && var1_type_info$allow_numeric
+  var2_is_dichotomous <- (var2_actual_type == "dichotomous") && var2_type_info$allow_numeric
   
   # Standard Kreuztabelle für kategoriale Variablen
   cat("→ Erstelle Standard-Kreuztabelle mit Labels\n")
@@ -5013,7 +5121,39 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
   crosstab_rel$Gesamt[1:(nrow(crosstab_rel)-1)] <- 100
   crosstab_rel$Gesamt[nrow(crosstab_rel)] <- 100
   
-  return(list(
+  # *** NEUE LOGIK: Zusätzliche numerische Statistiken für dichotome Variablen ***
+  numeric_table <- NULL
+  
+  if (var1_is_dichotomous && !var2_is_dichotomous) {
+    # var1 dichotom, var2 gruppierend → Numerische Kennwerte von var1 nach Gruppen von var2
+    cat("→ Erstelle zusätzliche numerische Statistiken: dichotome Variable", var1, "nach Gruppen von", var2, "\n")
+    numeric_table <- create_dichotomous_numeric_crosstab(complete_data, var1, var2_display, survey_obj)
+    
+  } else if (var2_is_dichotomous && !var1_is_dichotomous) {
+    # var2 dichotom, var1 gruppierend → Numerische Kennwerte von var2 nach Gruppen von var1
+    cat("→ Erstelle zusätzliche numerische Statistiken: dichotome Variable", var2, "nach Gruppen von", var1, "\n")
+    numeric_table <- create_dichotomous_numeric_crosstab(complete_data, var2, var1_display, survey_obj)
+    
+  } else if (var1_is_dichotomous && var2_is_dichotomous) {
+    # Beide dichotom → Erstelle numerische Statistiken für beide Richtungen
+    cat("→ Beide Variablen dichotom: Erstelle numerische Statistiken für beide Richtungen\n")
+    numeric_table1 <- create_dichotomous_numeric_crosstab(complete_data, var1, var2_display, survey_obj)
+    numeric_table2 <- create_dichotomous_numeric_crosstab(complete_data, var2, var1_display, survey_obj)
+    
+    # Kombiniere beide Tabellen
+    if (!is.null(numeric_table1) && !is.null(numeric_table2)) {
+      # Füge Trennzeile hinzu
+      separator_row <- data.frame(matrix("---", nrow = 1, ncol = ncol(numeric_table1)))
+      names(separator_row) <- names(numeric_table1)
+      
+      numeric_table <- rbind(numeric_table1, separator_row, numeric_table2)
+    } else {
+      numeric_table <- if (!is.null(numeric_table1)) numeric_table1 else numeric_table2  # Verwende die verfügbare Tabelle
+    }
+  }
+  
+  # Rückgabe mit oder ohne numerische Tabelle
+  result <- list(
     absolute = crosstab_df,
     relative = crosstab_rel,
     n_total = sum(crosstab_df$Gesamt[nrow(crosstab_df)]),
@@ -5021,13 +5161,105 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     var2_name = var2,
     var1_type = var1_actual_type,
     var2_type = var2_actual_type
-  ))
+  )
+  
+  # Füge numerische Tabelle hinzu, falls vorhanden
+  if (!is.null(numeric_table)) {
+    result$numeric = numeric_table
+    cat("  ✅ Zusätzliche numerische Statistiken für dichotome Variable(n) erstellt\n")
+  }
+  
+  return(result)
+}
+
+# *** NEUE HILFSFUNKTION: Numerische Statistiken für dichotome Variablen in Kreuztabellen ***
+create_dichotomous_numeric_crosstab <- function(data, dichotom_var, group_var, survey_obj = NULL) {
+  "Erstellt numerische Statistiken für dichotome Variable gruppiert nach einer anderen Variable"
+  
+  # Prüfe ob Variablen existieren
+  if (!dichotom_var %in% names(data) || !group_var %in% names(data)) {
+    cat("  ❌ Variable(n) nicht gefunden:", dichotom_var, "oder", group_var, "\n")
+    return(NULL)
+  }
+  
+  # Konvertiere dichotome Variable zu numerisch für Statistiken
+  # Versuche verschiedene Konvertierungsstrategien
+  dichotom_numeric <- tryCatch({
+    # Strategie 1: Direkte numerische Konvertierung
+    if (is.numeric(data[[dichotom_var]])) {
+      data[[dichotom_var]]
+    } else if (is.factor(data[[dichotom_var]])) {
+      # Strategie 2: Factor-Levels zu numerisch
+      factor_levels <- levels(data[[dichotom_var]])
+      if (length(factor_levels) == 2) {
+        # Konvertiere zu 0/1 (erstes Level = 0, zweites Level = 1)
+        as.numeric(data[[dichotom_var]]) - 1
+      } else {
+        as.numeric(data[[dichotom_var]])
+      }
+    } else {
+      # Strategie 3: Character zu numerisch
+      char_values <- as.character(data[[dichotom_var]])
+      unique_values <- unique(char_values[!is.na(char_values)])
+      
+      if (length(unique_values) == 2) {
+        # Y/N, J/N Muster
+        if (all(unique_values %in% c("Y", "N"))) {
+          ifelse(char_values == "Y", 1, ifelse(char_values == "N", 0, NA))
+        } else if (all(unique_values %in% c("J", "N"))) {
+          ifelse(char_values == "J", 1, ifelse(char_values == "N", 0, NA))
+        } else {
+          # Andere 2-Kategorien: Alphabetisch sortieren und zu 0/1 konvertieren
+          sorted_values <- sort(unique_values)
+          ifelse(char_values == sorted_values[2], 1, ifelse(char_values == sorted_values[1], 0, NA))
+        }
+      } else {
+        # Fallback: Versuche direkte numerische Konvertierung
+        suppressWarnings(as.numeric(char_values))
+      }
+    }
+  }, error = function(e) {
+    cat("  ❌ Fehler bei numerischer Konvertierung von", dichotom_var, ":", e$message, "\n")
+    return(NULL)
+  })
+  
+  if (is.null(dichotom_numeric) || all(is.na(dichotom_numeric))) {
+    cat("  ❌ Konnte", dichotom_var, "nicht zu numerisch konvertieren\n")
+    return(NULL)
+  }
+  
+  # Erstelle temporären Datensatz mit numerischer Variable
+  temp_data <- data
+  temp_data[[paste0(dichotom_var, "_numeric")]] <- dichotom_numeric
+  
+  # Verwende die bestehende create_group_means_table Funktion
+  # Versuche Config aus globalem Scope zu holen (falls verfügbar)
+  global_config <- if (exists("config", envir = .GlobalEnv)) get("config", envir = .GlobalEnv) else NULL
+  
+  result <- tryCatch({
+    create_group_means_table(temp_data, paste0(dichotom_var, "_numeric"), group_var, survey_obj, global_config)
+  }, error = function(e) {
+    cat("  ❌ Fehler bei Erstellung der Gruppenmittelwerte:", e$message, "\n")
+    return(NULL)
+  })
+  
+  # Passe die Spaltennamen an (entferne "_numeric" Suffix)
+  if (!is.null(result) && "group_means" %in% names(result)) {
+    # Ändere den Variablennamen in der Tabelle zurück zum Original
+    if ("Variable" %in% names(result$group_means)) {
+      result$group_means$Variable[result$group_means$Variable == paste0(dichotom_var, "_numeric")] <- dichotom_var
+    }
+    
+    return(result$group_means)
+  }
+  
+  return(NULL)
 }
 
 
-# NEUE HILFSFUNKTION: Sichere Factor-zu-Numerisch Konvertierung
-convert_factor_to_numeric_safe <- function(factor_var, var_name) {
-  "Sichere Konvertierung von Factor zu numerisch mit AO-Pattern Unterstützung"
+# NEUE HILFSFUNKTION: Sichere Factor-zu-Numerisch Konvertierung mit Codebook-Integration
+convert_factor_to_numeric_safe <- function(factor_var, var_name, config = NULL) {
+  "Sichere Konvertierung von Factor zu numerisch mit global_codebook und Config-Integration"
   
   if (!is.factor(factor_var)) {
     return(factor_var)  # Bereits nicht-Factor
@@ -5036,12 +5268,64 @@ convert_factor_to_numeric_safe <- function(factor_var, var_name) {
   factor_levels <- levels(factor_var)
   cat("    Factor Levels für", var_name, ":", paste(factor_levels, collapse = ", "), "\n")
   
-  # *** NEU: AO-Pattern Erkennung in Factor Levels ***
-  # Prüfe ob Levels AO-Pattern enthalten
+  # *** STRATEGIE 1: Verwende global_codebook und Config für intelligente Konvertierung ***
+  if (exists("global_codebook", envir = .GlobalEnv)) {
+    codebook <- get("global_codebook", envir = .GlobalEnv)
+    
+    if (var_name %in% codebook$Variable) {
+      wertelabels_str <- codebook$Wertelabels[codebook$Variable == var_name]
+      
+      if (!is.na(wertelabels_str) && wertelabels_str != "keine") {
+        cat("    → Verwende global_codebook für", var_name, "\n")
+        
+        # Parse Wertelabels (Format: "AO01 = Weiblich; AO02 = Männlic; AO03 = Divers")
+        labels <- tryCatch({
+          parse_coding(wertelabels_str)
+        }, error = function(e) {
+          cat("    ❌ Fehler beim Parsen der Labels:", e$message, "\n")
+          NULL
+        })
+        
+        if (!is.null(labels) && length(labels) > 0) {
+          cat("    → Labels gefunden:", length(labels), "Einträge\n")
+          
+          # Hole Config-Informationen für min/max Werte
+          config_info <- list(min_value = NA, max_value = NA)
+          if (!is.null(config) && "variablen" %in% names(config)) {
+            var_config <- config$variablen[config$variablen$variable_name == var_name, ]
+            if (nrow(var_config) > 0) {
+              config_info$min_value <- var_config$min_value[1]
+              config_info$max_value <- var_config$max_value[1]
+            }
+          }
+          
+          # Verwende die bestehende extract_numeric_from_matrix_coding Funktion
+          numeric_result <- tryCatch({
+            extract_numeric_from_matrix_coding(
+              as.character(factor_var), 
+              wertelabels_str, 
+              config_info$min_value, 
+              config_info$max_value
+            )
+          }, error = function(e) {
+            cat("    ❌ extract_numeric_from_matrix_coding fehlgeschlagen:", e$message, "\n")
+            NULL
+          })
+          
+          if (!is.null(numeric_result) && !all(is.na(numeric_result))) {
+            cat("    ✅ Codebook-basierte Konvertierung erfolgreich:", sum(!is.na(numeric_result)), "Werte\n")
+            return(numeric_result)
+          }
+        }
+      }
+    }
+  }
+  
+  # *** STRATEGIE 2: Fallback - AO-Pattern Erkennung in Factor Levels ***
   ao_pattern_detected <- any(grepl("^AO\\d+", factor_levels))
   
   if (ao_pattern_detected) {
-    cat("    → AO-Pattern in Factor Levels erkannt\n")
+    cat("    → Fallback: AO-Pattern in Factor Levels erkannt\n")
     
     # Konvertiere AO-Pattern zu numerischen Werten
     numeric_result <- rep(NA, length(factor_var))
@@ -5068,7 +5352,7 @@ convert_factor_to_numeric_safe <- function(factor_var, var_name) {
     return(numeric_result)
   }
   
-  # Bestehende Logik für normale Factor-Levels
+  # *** STRATEGIE 3: Bestehende Logik für normale Factor-Levels ***
   if (all(grepl("^\\d+(\\.\\d+)?$", factor_levels))) {
     result <- as.numeric(as.character(factor_var))
     cat("    → Konvertierung über numerische Levels erfolgreich\n")
@@ -5081,7 +5365,7 @@ convert_factor_to_numeric_safe <- function(factor_var, var_name) {
 }
 
 # Gruppenmittelwerte-Funktion (ERWEITERT mit Validierung)
-create_group_means_table <- function(data, numeric_var, group_var, survey_obj = NULL) {
+create_group_means_table <- function(data, numeric_var, group_var, survey_obj = NULL, config = NULL) {
   
   cat("Erstelle Gruppenmittelwerte für", numeric_var, "gruppiert nach", group_var, "\n")
   
@@ -5096,26 +5380,41 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   # NEUER FIX: Konvertiere Factor zu numerisch falls nötig
   if (is.factor(data[[numeric_var]])) {
     cat("KONVERTIERE Factor", numeric_var, "zu numerisch für Gruppenmittelwerte\n")
+    cat("  Original Factor Levels:", paste(levels(data[[numeric_var]]), collapse = ", "), "\n")
+    cat("  Erste 5 Werte:", paste(head(as.character(data[[numeric_var]]), 5), collapse = ", "), "\n")
     
-    # Versuche intelligente Konvertierung
-    factor_levels <- levels(data[[numeric_var]])
-    cat("Factor Levels:", paste(factor_levels, collapse = ", "), "\n")
+    # Verwende die spezialisierte Konvertierungsfunktion für AO-Pattern
+    converted_values <- convert_factor_to_numeric_safe(data[[numeric_var]], numeric_var, config)
     
-    # Strategie 1: Levels sind bereits numerisch (z.B. "1", "2", "3")
-    if (all(grepl("^\\d+(\\.\\d+)?$", factor_levels))) {
-      data[[numeric_var]] <- as.numeric(as.character(data[[numeric_var]]))
-      cat("→ Konvertierung über numerische Levels erfolgreich\n")
+    if (!is.null(converted_values) && !all(is.na(converted_values))) {
+      data[[numeric_var]] <- converted_values
+      cat("→ Konvertierung über convert_factor_to_numeric_safe erfolgreich\n")
+      cat("  Konvertierte Werte (erste 5):", paste(head(converted_values, 5), collapse = ", "), "\n")
     } else {
-      # Strategie 2: Verwende Level-Position als numerische Werte
-      data[[numeric_var]] <- as.numeric(data[[numeric_var]])
-      cat("→ Konvertierung über Level-Position erfolgreich\n")
+      cat("→ convert_factor_to_numeric_safe fehlgeschlagen, versuche Fallback\n")
+      # Fallback: Versuche einfache Konvertierung
+      factor_levels <- levels(data[[numeric_var]])
+      cat("Factor Levels:", paste(factor_levels, collapse = ", "), "\n")
+      
+      # Strategie 1: Levels sind bereits numerisch (z.B. "1", "2", "3")
+      if (all(grepl("^\\d+(\\.\\d+)?$", factor_levels))) {
+        data[[numeric_var]] <- as.numeric(as.character(data[[numeric_var]]))
+        cat("→ Konvertierung über numerische Levels erfolgreich\n")
+      } else {
+        # Strategie 2: Verwende Level-Position als numerische Werte
+        data[[numeric_var]] <- as.numeric(data[[numeric_var]])
+        cat("→ Konvertierung über Level-Position erfolgreich\n")
+      }
     }
     
     # Neue Validierung nach Konvertierung
     valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
     if (length(valid_numeric) == 0) {
       cat("❌ FEHLER: Konvertierung zu numerisch fehlgeschlagen\n")
+      cat("  Alle konvertierten Werte sind NA\n")
       return(NULL)
+    } else {
+      cat("✅ Konvertierung erfolgreich:", length(valid_numeric), "gültige numerische Werte\n")
     }
   } else if (!is.numeric(data[[numeric_var]])) {
     # Variable ist weder Factor noch numerisch → versuche direkte Konvertierung
@@ -5710,9 +6009,10 @@ perform_t_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_o
   var1_actual_type <- var1_type_info$type
   var2_actual_type <- var2_type_info$type
   
-  # *** AKTUALISIERTE LOGIK: Numerisch/ordinal/dichotom mit erlaubter Konvertierung vs nominal ***
-  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var1_type_info$allow_numeric
-  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var2_type_info$allow_numeric
+  # *** AKTUALISIERTE LOGIK: Numerisch/ordinal mit erlaubter Konvertierung vs nominal ***
+  # ÄNDERUNG: Dichotome Merkmale werden als kategorial behandelt
+  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal")) && var1_type_info$allow_numeric
+  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal")) && var2_type_info$allow_numeric
   
   if (var1_is_numeric && var2_actual_type == "nominal") {
     numeric_var <- var1
@@ -5790,9 +6090,10 @@ perform_anova_test_safe <- function(data, var1, var2, var1_type, var2_type, surv
   var1_actual_type <- var1_type_info$type
   var2_actual_type <- var2_type_info$type
   
-  # *** AKTUALISIERTE LOGIK: Numerisch/ordinal/dichotom mit erlaubter Konvertierung ***
-  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var1_type_info$allow_numeric
-  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal", "dichotomous")) && var2_type_info$allow_numeric
+  # *** AKTUALISIERTE LOGIK: Numerisch/ordinal mit erlaubter Konvertierung ***
+  # ÄNDERUNG: Dichotome Merkmale werden als kategorial behandelt
+  var1_is_numeric <- (var1_actual_type %in% c("numeric", "ordinal")) && var1_type_info$allow_numeric
+  var2_is_numeric <- (var2_actual_type %in% c("numeric", "ordinal")) && var2_type_info$allow_numeric
   
   if (var1_is_numeric && var2_actual_type == "nominal") {
     numeric_var <- var1
@@ -7851,6 +8152,18 @@ export_crosstabs <- function(wb, crosstab_results, header_style, table_style, ti
                  rows = (current_row + 1):(current_row + nrow(result$crosstab$relative)), 
                  cols = 1:(ncol(result$crosstab$relative) + 1), gridExpand = TRUE)
         current_row <- current_row + nrow(result$crosstab$relative) + 3
+        
+        # *** NEUE LOGIK: Numerische Kennwerte für dichotome Variablen ***
+        if (!is.null(result$crosstab$numeric)) {
+          writeData(wb, "Kreuztabellen", "Numerische Kennwerte nach Gruppen (dichotome Variable):", startRow = current_row)
+          current_row <- current_row + 1
+          writeData(wb, "Kreuztabellen", result$crosstab$numeric, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Kreuztabellen", header_style, rows = current_row, cols = 1:ncol(result$crosstab$numeric))
+          addStyle(wb, "Kreuztabellen", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(result$crosstab$numeric)), 
+                   cols = 1:ncol(result$crosstab$numeric), gridExpand = TRUE)
+          current_row <- current_row + nrow(result$crosstab$numeric) + 3
+        }
       }
     } else {
       writeData(wb, "Kreuztabellen", "Keine Daten verfügbar", startRow = current_row)
