@@ -4461,13 +4461,17 @@ extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, d
           
           if (debug) cat("   📦 Extrahiertes Klammer-Label:", item_label, "\n")
           
-          # Prüfe ob das extrahierte Label sinnvoll ist (nicht nur "Subquestion 1" etc.)
-          if (nchar(item_label) > 3 && item_label != var_name && 
-              !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
-            if (debug) cat("   ✅ Verwende bereinigtes Klammer-Label\n")
-            return(item_label)
-          } else if (debug) {
-            cat("   ⚠ Klammer-Label ist generisch, verwende volles Label\n")
+          # *** IMMER den Text aus den Klammern verwenden, wenn Klammern vorhanden ***
+          # Prüfe nur ob das Label nicht leer oder zu kurz ist
+          if (nchar(item_label) > 0 && item_label != var_name) {
+            # Prüfe ob es ein generisches Label ist
+            if (grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
+              if (debug) cat("   ⚠ Klammer-Label ist generisch, verwende volles Label\n")
+              # Fallback zum vollen Label
+            } else {
+              if (debug) cat("   ✅ Verwende bereinigtes Klammer-Label\n")
+              return(item_label)
+            }
           }
         } else if (debug) {
           cat("   ℹ Keine eckigen Klammern gefunden, verwende Label wie es ist\n")
