@@ -3094,24 +3094,69 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   )
   
   # Wertelabels KORREKT extrahieren (Code = Label Format)
+  # *** SCHRITT 1: Globale Prüfung ob Labels umgekehrt sind ***
+  cat("Analysiere Label-Format (Code = Label vs. Label = Code)...\n")
+  
+  # Sammle Stichprobe von Variablen mit Labels
+  sample_label_info <- list()
+  for (var_name in names(data)) {
+    labels <- attr(data[[var_name]], "labels")
+    if (!is.null(labels) && length(labels) > 0) {
+      label_names <- names(labels)
+      label_values <- as.character(labels)
+      
+      sample_label_info[[var_name]] <- list(
+        avg_name_len = mean(nchar(label_names)),
+        avg_value_len = mean(nchar(label_values)),
+        names = label_names,
+        values = label_values
+      )
+      
+      # Sammle maximal 20 Stichproben für Analyse
+      if (length(sample_label_info) >= 20) break
+    }
+  }
+  
+  # Entscheide global basierend auf Mehrheit
+  needs_reversal <- FALSE
+  if (length(sample_label_info) > 0) {
+    reversal_votes <- sapply(sample_label_info, function(info) {
+      # Heuristik: Werte sind kürzer als Namen UND Werte sind kurz (<=10 Zeichen)
+      info$avg_name_len > info$avg_value_len && info$avg_value_len <= 10
+    })
+    
+    reversal_ratio <- sum(reversal_votes) / length(reversal_votes)
+    needs_reversal <- reversal_ratio > 0.5  # Mehrheitsentscheidung
+    
+    cat("  Stichprobe:", length(sample_label_info), "Variablen mit Labels\n")
+    cat("  Umkehrung nötig:", sum(reversal_votes), "von", length(reversal_votes), 
+        "(", round(reversal_ratio * 100, 1), "%)\n")
+    
+    if (needs_reversal) {
+      cat("  ✓ Entscheidung: Labels werden UMGEKEHRT (Code = Label)\n")
+      cat("    Beispiel:", sample_label_info[[1]]$values[1], "=", 
+          sample_label_info[[1]]$names[1], "\n")
+    } else {
+      cat("  ✓ Entscheidung: Labels bleiben NORMAL (Label = Code)\n")
+      cat("    Beispiel:", sample_label_info[[1]]$names[1], "=", 
+          sample_label_info[[1]]$values[1], "\n")
+    }
+  } else {
+    cat("  ℹ Keine Variablen mit Labels gefunden\n")
+  }
+  
+  # *** SCHRITT 2: Wende Entscheidung konsistent auf ALLE Variablen an ***
   codebook_df$Wertelabels <- sapply(data, function(x) {
     labels <- attr(x, "labels")
     if (!is.null(labels) && length(labels) > 0) {
-      # WICHTIG: SPSS/haven speichert oft als c("Weiblich" = "AO01")
-      # Wir brauchen aber: c("AO01" = "Weiblich")
+      label_names <- names(labels)
+      label_values <- as.character(labels)
       
-      label_names <- names(labels)  # "Weiblich", "Männlich", ...
-      label_values <- as.character(labels)  # "AO01", "AO02", ...
-      
-      # Prüfe ob umgekehrt (Heuristik: Werte sind kürzer als Namen)
-      avg_name_len <- mean(nchar(label_names))
-      avg_value_len <- mean(nchar(label_values))
-      
-      if (avg_name_len > avg_value_len && avg_value_len <= 10) {
+      if (needs_reversal) {
         # Umkehren: Code = Label
         paste(label_values, "=", label_names, collapse = "; ")
       } else {
-        # Normal: verwende wie sie sind
+        # Normal: Label = Code
         paste(label_names, "=", label_values, collapse = "; ")
       }
     } else {
