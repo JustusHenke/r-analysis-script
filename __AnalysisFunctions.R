@@ -3172,41 +3172,57 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
     # Nur wenn keine Labels vorhanden sind
     if (codebook_df$Wertelabels[i] == "keine") {
       var_name <- codebook_df$Variable[i]
-      var_data <- data[[var_name]]
       
-      # Entferne NA und leere Werte
-      unique_vals <- unique(var_data[!is.na(var_data) & var_data != ""])
-      
-      # Prüfe ob genau 2 eindeutige Werte
-      if (length(unique_vals) == 2) {
-        sorted_vals <- sort(unique_vals)
+      tryCatch({
+        var_data <- data[[var_name]]
         
-        # Pattern 1: Y/N
-        if (all(sorted_vals %in% c("Y", "N"))) {
-          codebook_df$Wertelabels[i] <- "N = Nein; Y = Ja"
-          dichotomous_count <- dichotomous_count + 1
+        # Überspringe Datums- und Zeit-Variablen
+        if (inherits(var_data, c("Date", "POSIXct", "POSIXlt", "POSIXt"))) {
+          next
         }
-        # Pattern 2: y/n
-        else if (all(sorted_vals %in% c("y", "n"))) {
-          codebook_df$Wertelabels[i] <- "n = Nein; y = Ja"
-          dichotomous_count <- dichotomous_count + 1
+        
+        # Konvertiere zu character für sichere Verarbeitung
+        var_data_char <- as.character(var_data)
+        
+        # Entferne NA und leere Werte
+        unique_vals <- unique(var_data_char[!is.na(var_data_char) & var_data_char != ""])
+        
+        # Prüfe ob genau 2 eindeutige Werte
+        if (length(unique_vals) == 2) {
+          sorted_vals <- sort(unique_vals)
+          
+          # Pattern 1: Y/N
+          if (all(sorted_vals %in% c("Y", "N"))) {
+            codebook_df$Wertelabels[i] <- "N = Nein; Y = Ja"
+            dichotomous_count <- dichotomous_count + 1
+          }
+          # Pattern 2: y/n
+          else if (all(sorted_vals %in% c("y", "n"))) {
+            codebook_df$Wertelabels[i] <- "n = Nein; y = Ja"
+            dichotomous_count <- dichotomous_count + 1
+          }
+          # Pattern 3: 1/2
+          else if (all(sorted_vals %in% c("1", "2"))) {
+            codebook_df$Wertelabels[i] <- "1 = Ja; 2 = Nein"
+            dichotomous_count <- dichotomous_count + 1
+          }
+          # Pattern 4: 0/1
+          else if (all(sorted_vals %in% c("0", "1"))) {
+            codebook_df$Wertelabels[i] <- "0 = Nein; 1 = Ja"
+            dichotomous_count <- dichotomous_count + 1
+          }
         }
-        # Pattern 3: 1/2
-        else if (all(sorted_vals %in% c("1", "2")) || all(sorted_vals %in% c(1, 2))) {
-          codebook_df$Wertelabels[i] <- "1 = Ja; 2 = Nein"
-          dichotomous_count <- dichotomous_count + 1
-        }
-        # Pattern 4: 0/1
-        else if (all(sorted_vals %in% c("0", "1")) || all(sorted_vals %in% c(0, 1))) {
-          codebook_df$Wertelabels[i] <- "0 = Nein; 1 = Ja"
-          dichotomous_count <- dichotomous_count + 1
-        }
-      }
+      }, error = function(e) {
+        # Stille Fehlerbehandlung - überspringe problematische Variablen
+        # (z.B. Datumsvariablen, komplexe Typen)
+      })
     }
   }
   
   if (dichotomous_count > 0) {
     cat("  ✓", dichotomous_count, "dichotome Variablen automatisch gelabelt (Ja/Nein)\n")
+  } else {
+    cat("  ℹ Keine ungelabelten dichotomen Variablen gefunden\n")
   }
   
   # *** WICHTIG: Speichere dieses Codebook SOFORT als globales Codebook ***
