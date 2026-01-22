@@ -35,6 +35,10 @@ ALPHA_LEVEL <- 0.05
 DIGITS_ROUND <- 2
 INCLUDE_MISSING_DEFAULT <- FALSE
 
+# Export-Einstellungen
+EXPORT_OPEN_TEXT <- TRUE  # Separate Excel-Datei für offene Textantworten
+SAVE_CODEBOOK <- FALSE  # Codebook als Datei speichern (für Dokumentation)
+
 
 # =============================================================================
 # Zusätzliche Variablen
