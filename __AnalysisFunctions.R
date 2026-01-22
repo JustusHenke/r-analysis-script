@@ -1428,7 +1428,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     
     for (var in matrix_vars) {
       # Label extrahieren - VERWENDE GLEICHE LOGIK WIE BEI ORDINALEN MATRIX
-      item_label <- extract_item_label(data, var, matrix_name)
+      item_label <- extract_item_label(data, var, matrix_name, debug = TRUE)
       
       # FALLBACK: Falls Label schlecht ist, versuche bessere Extraktion
       if (grepl("^(Item|Item:|Subquestion)", item_label)) {
@@ -1510,7 +1510,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     
     for (var in matrix_vars) {
       # Label extrahieren
-      item_label <- extract_item_label(data, var, matrix_name)
+      item_label <- extract_item_label(data, var, matrix_name, debug = TRUE)
       
       # Daten für dieses Item filtern (Datentyp-Normalisierung bereits erfolgt)
       var_values <- data[[var]]
@@ -1695,7 +1695,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     numeric_stats_rows <- list()
     
     for (var in matrix_vars) {
-      item_label <- extract_item_label(data, var, matrix_name)
+      item_label <- extract_item_label(data, var, matrix_name, debug = TRUE)
       
       # *** FIX: Initialize stats_row to prevent "object not found" errors ***
       stats_row <- NULL
@@ -4249,14 +4249,17 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
 # NEUE HILFSFUNKTION: LABEL-EXTRAKTION FÜR MATRIX-ITEMS
 # =============================================================================
 
-extract_item_label <- function(data, var_name, matrix_name) {
+extract_item_label <- function(data, var_name, matrix_name, debug = FALSE) {
   "Extrahiert das echte Label einer Matrix-Variable - nutzt zentrale get_variable_label Funktion"
+  
+  if (debug) cat("🔍 extract_item_label für:", var_name, "\n")
   
   # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
   if (exists("custom_var_labels", inherits = FALSE)) {
     if (var_name %in% names(custom_var_labels)) {
       custom_label <- custom_var_labels[[var_name]]
       if (!is.null(custom_label) && custom_label != "") {
+        if (debug) cat("   ✅ Custom Label gefunden:", custom_label, "\n")
         return(custom_label)
       }
     }
@@ -4266,7 +4269,17 @@ extract_item_label <- function(data, var_name, matrix_name) {
   # Dies ist wichtiger als das Codebook, da es die originalen SPSS-Labels enthält
   var_label <- attr(data[[var_name]], "label")
   
+  if (debug) {
+    if (!is.null(var_label)) {
+      cat("   📋 Daten-Attribut 'label':", var_label, "\n")
+    } else {
+      cat("   ❌ Kein Daten-Attribut 'label' gefunden\n")
+    }
+  }
+  
   if (!is.null(var_label) && var_label != "" && var_label != var_name) {
+    
+    if (debug) cat("   🔍 Verarbeite Label, Länge:", nchar(var_label), "\n")
     
     # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
     # Pattern: "[Item-Text] Fragentext..." -> "Item-Text"
@@ -4278,16 +4291,24 @@ extract_item_label <- function(data, var_name, matrix_name) {
       bracket_length <- attr(bracket_match, "match.length") - 2  # Ohne die Klammern
       item_label <- substr(var_label, bracket_start, bracket_start + bracket_length - 1)
       
+      if (debug) cat("   📦 Extrahiertes Klammer-Label:", item_label, "\n")
+      
       # Prüfe ob das extrahierte Label sinnvoll ist (nicht nur "Subquestion 1" etc.)
       if (nchar(item_label) > 5 && item_label != var_name && 
           !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
+        if (debug) cat("   ✅ Verwende Klammer-Label:", item_label, "\n")
         return(item_label)
+      } else if (debug) {
+        cat("   ❌ Klammer-Label ist generisch oder zu kurz\n")
       }
+    } else if (debug) {
+      cat("   ❌ Keine eckigen Klammern gefunden\n")
     }
     
     # Fallback: Verwende das volle Label wenn es nicht zu lang ist
     if (nchar(var_label) < 150) {
       # Kurz genug - verwende wie es ist
+      if (debug) cat("   ✅ Verwende volles Label (kurz):", substr(var_label, 1, 50), "...\n")
       return(var_label)
     } else {
       # Zu lang - kürze auf ersten sinnvollen Satz/Teil
@@ -4299,6 +4320,7 @@ extract_item_label <- function(data, var_name, matrix_name) {
         shortened <- substr(var_label, 1, 100)
       }
       shortened <- trimws(shortened)
+      if (debug) cat("   ✅ Verwende gekürztes Label:", shortened, "\n")
       return(shortened)
     }
   }
