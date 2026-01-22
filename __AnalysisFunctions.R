@@ -3119,10 +3119,12 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
     }
   })
   
-  # Speichere Codebook im Cache (global environment)
+  # *** WICHTIG: Speichere dieses Codebook SOFORT als globales Codebook ***
+  # Es enthält die originalen Labels VOR der haven_labelled Konvertierung!
   assign("global_codebook", codebook_df, envir = .GlobalEnv)
-  cat("✓ Codebook erstellt und gecacht für", nrow(codebook_df), "Variablen\n")
-  cat("  Variablen mit Labels:", sum(codebook_df$Wertelabels != "keine"), "\n")
+  cat("✓ Globales Codebook erstellt und gecacht für", nrow(codebook_df), "Variablen\n")
+  cat("  Variablen mit Variable-Labels:", sum(codebook_df$Label != ""), "\n")
+  cat("  Variablen mit Werte-Labels:", sum(codebook_df$Wertelabels != "keine"), "\n")
   
   # Optional: Speichere Codebook auch als Datei für Dokumentation
   if (exists("SAVE_CODEBOOK") && SAVE_CODEBOOK) {
@@ -3181,10 +3183,50 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   # 7. LABELS ANWENDEN (für alle Variablen)
   data <- apply_variable_labels(data, custom_var_labels, custom_val_labels)
   
-  # 7.5. GLOBALES CODEBOOK ERSTELLEN (einmalig für alle Analysen)
-  cat("Erstelle globales Codebook für effiziente Label-Extraktion...\n")
-  codebook_file <- if (exists("CODEBOOK_FILE") && file.exists(CODEBOOK_FILE)) CODEBOOK_FILE else NULL
-  create_global_codebook(data, codebook_file)
+  # 7.5. GLOBALES CODEBOOK AKTUALISIEREN (nicht überschreiben!)
+  # Das Codebook wurde bereits in Schritt 1 erstellt mit den originalen Labels
+  # Hier nur ergänzen für neue Variablen (Custom Variables, Indices)
+  cat("Aktualisiere globales Codebook für neue Variablen...\n")
+  if (exists("global_codebook", envir = .GlobalEnv)) {
+    existing_codebook <- get("global_codebook", envir = .GlobalEnv)
+    existing_vars <- existing_codebook$Variable
+    new_vars <- setdiff(names(data), existing_vars)
+    
+    if (length(new_vars) > 0) {
+      cat("  Füge", length(new_vars), "neue Variablen zum Codebook hinzu\n")
+      
+      # Erstelle Codebook-Einträge für neue Variablen
+      new_codebook_entries <- data.frame(
+        Variable = new_vars,
+        Label = sapply(data[new_vars], function(x) {
+          label <- attr(x, "label")
+          if (is.null(label)) "" else as.character(label)
+        }),
+        Typ = sapply(data[new_vars], function(x) paste(class(x), collapse = ", ")),
+        Wertelabels = sapply(data[new_vars], function(x) {
+          labels <- attr(x, "labels")
+          if (!is.null(labels)) {
+            paste(names(labels), "=", labels, collapse = "; ")
+          } else {
+            "keine"
+          }
+        }),
+        stringsAsFactors = FALSE
+      )
+      
+      # Füge neue Einträge zum existierenden Codebook hinzu
+      updated_codebook <- rbind(existing_codebook, new_codebook_entries)
+      assign("global_codebook", updated_codebook, envir = .GlobalEnv)
+      cat("  ✓ Codebook aktualisiert:", nrow(updated_codebook), "Variablen total\n")
+    } else {
+      cat("  ✓ Keine neuen Variablen, Codebook bleibt unverändert\n")
+    }
+  } else {
+    # Fallback: Erstelle Codebook wenn es nicht existiert (sollte nicht passieren)
+    cat("  ⚠ Kein existierendes Codebook gefunden, erstelle neues\n")
+    codebook_file <- if (exists("CODEBOOK_FILE") && file.exists(CODEBOOK_FILE)) CODEBOOK_FILE else NULL
+    create_global_codebook(data, codebook_file)
+  }
   
   # 8. WEITERE AUFBEREITUNG
   category_info <- auto_detect_categories(data, config)
@@ -4249,10 +4291,39 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
 # NEUE HILFSFUNKTION: LABEL-EXTRAKTION FÜR MATRIX-ITEMS
 # =============================================================================
 
-extract_item_label <- function(data, var_name, matrix_name, debug = FALSE) {
+extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, debug = FALSE) {
   "Extrahiert das echte Label einer Matrix-Variable - nutzt zentrale get_variable_label Funktion"
   
   if (debug) cat("🔍 extract_item_label für:", var_name, "\n")
+  
+  # 0. PRIORITÄT: Item-Labels aus Config (NEUE FUNKTION)
+  # Format in Config: item_labels = "SQ001=Erstes Item;SQ002=Zweites Item"
+  if (!is.null(var_config) && "item_labels" %in% names(var_config)) {
+    item_labels_str <- var_config$item_labels
+    if (!is.na(item_labels_str) && item_labels_str != "") {
+      if (debug) cat("   📋 Config hat item_labels:", item_labels_str, "\n")
+      
+      # Parse item_labels (Format: SQ001=Label1;SQ002=Label2)
+      item_labels_parsed <- parse_coding(item_labels_str)
+      
+      if (!is.null(item_labels_parsed) && length(item_labels_parsed) > 0) {
+        # Extrahiere Item-Code aus Variablennamen (z.B. KW04_SQ001 -> SQ001)
+        item_code <- gsub(paste0("^", matrix_name, "[._-]*"), "", var_name)
+        
+        if (debug) cat("   🔍 Suche Label für Item-Code:", item_code, "\n")
+        
+        # Suche Label für diesen Item-Code
+        if (item_code %in% names(item_labels_parsed)) {
+          item_label <- item_labels_parsed[[item_code]]
+          if (debug) cat("   ✅ Item-Label aus Config gefunden:", item_label, "\n")
+          return(item_label)
+        } else if (debug) {
+          cat("   ❌ Item-Code nicht in item_labels gefunden\n")
+          cat("   Verfügbare Codes:", paste(names(item_labels_parsed), collapse = ", "), "\n")
+        }
+      }
+    }
+  }
   
   # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
   if (exists("custom_var_labels", inherits = FALSE)) {
