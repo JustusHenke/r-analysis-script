@@ -2,15 +2,34 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Version: 1.4.0
-# Datum: 16.12.2025, 15:30 UTC
-# Letzte Änderung: Matrix categorical table bugfixes
+# Version: 1.5.0
+# Datum: 21.01.2026
+# Letzte Änderung: Separate Excel-Datei für offene Textantworten
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
 #               und Regressionsanalysen
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.5.0 (21.01.2026) - NEUE FEATURES
+#   • FEATURE: Separate Excel-Datei "Offene_Textantworten.xlsx" für Textantworten
+#   • FEATURE: Ein Sheet pro Textfrage mit Variablennamen als Sheet-Name
+#   • FEATURE: Spaltenüberschrift "Kategorie" zeigt Label der Sortiervariable
+#   • FEATURE: Daten beginnen in A1 mit Header-Zeile
+#   • FEATURE: Konfigurierbar über EXPORT_OPEN_TEXT = TRUE/FALSE
+#   • FEATURE: Externes Codebook-System (CODEBOOK_FILE) für persistente Labels
+#   • ENHANCEMENT: Automatische Spaltenbreiten und Freeze-Panes
+#   • FIX: Auto-Reverse für vertauschte Labels (Label = Code → Code = Label)
+#   • FIX: Verbesserte Label-Zuordnung über globales Codebook
+#   • FIX: Mehrschichtige Label-Suche (Codebook → RDS → custom_val_labels)
+#   • FIX: Regex-Fehler bei Code-Erkennung (AO01, AO02, etc.)
+# 
+# v1.4.1 (21.01.2026) - REFACTORING
+#   • REFACTOR: Zentrale haven_labelled Konvertierung beim Daten-Laden
+#   • CLEANUP: Entfernung redundanter haven_labelled Prüfungen (>10 Stellen)
+#   • ENHANCEMENT: Konsistente und effiziente Behandlung von SPSS-Importen
+#   • PERFORMANCE: Einmalige Konvertierung statt wiederholter Prüfungen
+# 
 # v1.4.0 (16.12.2025) - BUGFIXES
 #   • FIX: Matrix categorical tables showing all zeros (IV02, ZS02, AS13a)
 #   • FIX: unique_responses collection after data normalization (AO01→1 mismatch)
@@ -19,7 +38,6 @@
 #   • FIX: Weighted numeric statistics in matrix tables (consistency with categorical)
 #   • ENHANCEMENT: Generates global codebook from labelled data
 #   • ENHANCEMENT: Ordinal vs nominal AO-codes detection (IV02 vs SA07)
-#   • ENHANCEMENT: Haven_labelled mixed response conversion (ordinal + "Weiß nicht")
 # 
 # v1.3.0 (12.10.2025)
 #   • Matrix-Fragen erhalten nun auch statistische Tests 
@@ -152,8 +170,38 @@ load_packages <- function() {
 # =============================================================================
 
 # Globales Codebook für effiziente Label-Extraktion erstellen
-create_global_codebook <- function(data) {
-  "Erstellt ein globales Codebook für effiziente Label-Extraktion in allen Analysen"
+create_global_codebook <- function(data, external_codebook_file = NULL) {
+  "Erstellt ein globales Codebook für effiziente Label-Extraktion in allen Analysen
+  
+  Args:
+    data: Datensatz
+    external_codebook_file: Pfad zu externem Codebook (RDS-Datei), optional
+  "
+  
+  # Versuche externes Codebook zu laden
+  if (!is.null(external_codebook_file) && file.exists(external_codebook_file)) {
+    cat("Lade externes Codebook:", external_codebook_file, "\n")
+    codebook_df <- readRDS(external_codebook_file)
+    
+    # Validierung
+    required_cols <- c("Variable", "Label", "Typ", "Wertelabels")
+    if (all(required_cols %in% names(codebook_df))) {
+      # Filtere nur Variablen die auch in den Daten vorhanden sind
+      codebook_df <- codebook_df[codebook_df$Variable %in% names(data), ]
+      
+      cat("✓ Externes Codebook geladen für", nrow(codebook_df), "Variablen\n")
+      cat("  Variablen mit Labels:", sum(codebook_df$Wertelabels != "keine"), "\n")
+      
+      # Speichere global
+      assign("global_codebook", codebook_df, envir = .GlobalEnv)
+      return(invisible(codebook_df))
+    } else {
+      cat("⚠ Externes Codebook hat nicht das richtige Format, erstelle neues\n")
+    }
+  }
+  
+  # Fallback: Erstelle Codebook aus Daten (wie bisher)
+  cat("Erstelle Codebook aus Daten-Attributen...\n")
   
   codebook_df <- data.frame(
     Variable = names(data),
@@ -299,14 +347,7 @@ detect_variable_type_advanced <- function(var_name, data, config = NULL) {
   }
   
   # Analysiere Datenwerte
-  # *** FIX: Handle haven_labelled data at the source ***
-  clean_var_data <- if (inherits(var_data, "haven_labelled")) {
-    as.character(var_data)
-  } else {
-    var_data
-  }
-  
-  unique_values <- unique(clean_var_data[!is.na(clean_var_data)])
+  unique_values <- unique(var_data[!is.na(var_data)])
   unique_values <- unique_values[unique_values != ""]
   n_unique <- length(unique_values)
   
@@ -347,20 +388,12 @@ detect_variable_type_advanced <- function(var_name, data, config = NULL) {
   
   # REGEL 3: NUMERISCH - Zahlen ohne führende Nullen, keine Labels, mindestens 6 Werte
   if (is.null(labels) || length(labels) == 0) {
-    # *** FIX: Handle haven_labelled data properly ***
-    # Convert haven_labelled to character first, then try numeric conversion
-    char_values <- if (inherits(unique_values, "haven_labelled")) {
-      as.character(unique_values)
-    } else {
-      unique_values
-    }
-    
     # Prüfe ob alle Werte numerisch sind (ohne führende Nullen)
-    numeric_values <- suppressWarnings(as.numeric(char_values))
+    numeric_values <- suppressWarnings(as.numeric(unique_values))
     all_numeric <- !any(is.na(numeric_values))
     
     # Prüfe auf führende Nullen (001, 002 etc.)
-    has_leading_zeros <- any(grepl("^0\\d+", char_values))
+    has_leading_zeros <- any(grepl("^0\\d+", unique_values))
     
     if (all_numeric && !has_leading_zeros && n_unique >= 6) {
       cat("   ✅ NUMERISCH: Zahlen ohne führende Nullen, keine Labels, >=6 Werte\n")
@@ -450,14 +483,7 @@ detect_variable_type_advanced <- function(var_name, data, config = NULL) {
   
   # Prüfe ob alle Werte numerisch konvertierbar sind (für weitere Regeln)
   if (is.null(labels) || length(labels) == 0) {
-    # *** FIX: Handle haven_labelled data properly ***
-    char_values_fallback <- if (inherits(unique_values, "haven_labelled")) {
-      as.character(unique_values)
-    } else {
-      unique_values
-    }
-    
-    numeric_values <- suppressWarnings(as.numeric(char_values_fallback))
+    numeric_values <- suppressWarnings(as.numeric(unique_values))
     all_numeric <- !any(is.na(numeric_values))
     
     if (all_numeric) {
@@ -972,8 +998,8 @@ extract_numeric_from_matrix_coding <- function(data_values, coding_string, min_v
 }
 
 # NEUE HILFSFUNKTION: Verbesserte Kodierung-Parser
-parse_coding <- function(coding_string) {
-  "Verbesserte Parsing-Funktion für Matrix-Kodierungen - unterstützt auch 'Zahl (Text)' Format"
+parse_coding <- function(coding_string, auto_reverse = TRUE) {
+  "Verbesserte Parsing-Funktion für Matrix-Kodierungen - unterstützt auch 'Zahl (Text)' Format und Auto-Reverse"
   
   if (is.na(coding_string) || coding_string == "") {
     return(NULL)
@@ -987,7 +1013,7 @@ parse_coding <- function(coding_string) {
   
   for (part in parts) {
     if (str_detect(part, "=")) {
-      # Format: "1=Label" oder "1 = Label"
+      # Format: "1=Label" oder "1 = Label" oder "Label = 1"
       split_part <- str_split(part, "=", n = 2)[[1]]
       if (length(split_part) == 2) {
         code <- str_trim(split_part[1])
@@ -1015,6 +1041,26 @@ parse_coding <- function(coding_string) {
     }
   }
   
+  # *** AUTO-REVERSE: Prüfe ob Labels und Codes vertauscht sind ***
+  if (auto_reverse && length(labels) > 0) {
+    label_keys <- names(labels)
+    label_values <- as.character(labels)
+    
+    # Heuristik: Wenn die Keys (names) länger sind als die Values, sind sie wahrscheinlich vertauscht
+    # Beispiel: c("Weiblich" = "AO01") -> Keys="Weiblich" (8 Zeichen), Values="AO01" (4 Zeichen)
+    avg_key_len <- mean(nchar(label_keys))
+    avg_value_len <- mean(nchar(label_values))
+    
+    # Zusätzliche Prüfung: Sind die Values kurze Codes (AO01, 1, etc.)?
+    values_are_codes <- all(grepl("^[A-Z]+[0-9]+$|^[0-9]+$", label_values))
+    
+    if (avg_key_len > avg_value_len && avg_value_len <= 10 && values_are_codes) {
+      # Vertauschen: Keys werden zu Values, Values werden zu Keys
+      labels <- setNames(label_keys, label_values)
+      cat("  ℹ Labels waren vertauscht (Label = Code), wurden umgekehrt zu (Code = Label)\n")
+    }
+  }
+  
   # *** NEUER FALLBACK für Daten-Werte ***
   # Falls keine Labels aus Config gefunden, versuche aus den Datenwerten zu extrahieren
   if (length(labels) == 0) {
@@ -1039,13 +1085,12 @@ parse_coding <- function(coding_string) {
   if (length(labels) > 0) {
     # Extrahiere numerische Codes und sortiere danach
     label_codes <- names(labels)
-    numeric_codes <- suppressWarnings(as.numeric(label_codes))
+    numeric_codes <- suppressWarnings(as.numeric(gsub("^[A-Z]+0*", "", label_codes)))  # AO01 -> 1
     
     # Falls numerische Codes vorhanden sind, sortiere nach diesen
     if (!any(is.na(numeric_codes))) {
       sorted_indices <- order(numeric_codes)
       labels <- labels[sorted_indices]
-      cat("  Labels nach numerischen Codes sortiert\n")
     } else {
       # Fallback: Sortiere nach bekannten ordinalen Mustern in den Label-Texten
       label_values <- as.character(labels)
@@ -1137,7 +1182,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       cat("Ordinale Kodierung erkannt -> numerische Konvertierung erlaubt\n")
     }
   } else {
-    cat("Keine Range/ordinale Kodierung -> nur haven_labelled/factor Konvertierung\n")
+    cat("Keine Range/ordinale Kodierung -> nur factor Konvertierung\n")
   }
   
   # SCHRITT 1: Analysiere Datentypen und sammle Kategorien in einem Durchgang
@@ -1149,7 +1194,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     original_class <- class(var_values)[1]
     
     # Prüfe ob Normalisierung nötig ist
-    if (inherits(var_values, "haven_labelled") || is.factor(var_values)) {
+    if (is.factor(var_values)) {
       needs_normalization <- TRUE
     } else if (is.character(var_values) && allow_numeric_conversion) {
       # *** SICHERHEIT: Character-zu-numeric nur bei ordinalen/numerischen Hinweisen ***
@@ -1189,60 +1234,8 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     for (var in matrix_vars) {
       var_values <- data[[var]]
       
-      # *** ENHANCED: Konvertiere haven_labelled mit sophistizierter Label-Extraktion ***
-      if (inherits(var_values, "haven_labelled")) {
-        if (allow_numeric_conversion) {
-          # Versuche zuerst einfache Konvertierung
-          simple_numeric <- tryCatch({
-            as.numeric(var_values)
-          }, error = function(e) NULL, warning = function(w) NULL)
-          
-          if (!is.null(simple_numeric) && !all(is.na(simple_numeric))) {
-            # Einfache Konvertierung erfolgreich
-            var_values <- simple_numeric
-            cat("  ", var, ": haven_labelled -> numeric (einfache Konvertierung)\n")
-          } else {
-            # Einfache Konvertierung fehlgeschlagen, verwende Label-basierte Extraktion
-            cat("  ", var, ": haven_labelled einfache Konvertierung fehlgeschlagen, verwende Label-Extraktion\n")
-            
-            # Konvertiere zu character und verwende dann matrix coding extraction
-            char_values <- as.character(var_values)
-            
-            if (!is.null(labels) && length(labels) > 0) {
-              # Verwende die sophistizierte Matrix-Kodierung-Extraktion
-              coding_string <- paste(names(labels), "=", labels, collapse = ";")
-              numeric_values <- extract_numeric_from_matrix_coding(
-                char_values, 
-                coding_string,
-                matrix_config$min_value,
-                matrix_config$max_value
-              )
-              
-              successful_conversions <- sum(!is.na(numeric_values))
-              total_values <- length(char_values[!is.na(char_values)])
-              
-              if (successful_conversions > 0) {
-                var_values <- numeric_values
-                cat("    ✅ Label-basierte Konvertierung:", successful_conversions, "von", total_values, "Werten\n")
-              } else {
-                # Fallback zu character
-                var_values <- char_values
-                cat("    ❌ Label-basierte Konvertierung fehlgeschlagen, bleibt character\n")
-              }
-            } else {
-              # Keine Labels verfügbar, fallback zu character
-              var_values <- char_values
-              cat("    ❌ Keine Labels für Konvertierung verfügbar, bleibt character\n")
-            }
-          }
-        } else {
-          # Für nominale Variablen: Behalte Labels als character
-          var_values <- as.character(var_values)
-          cat("  ", var, ": haven_labelled -> character (nominale Variable)\n")
-        }
-      }
       # *** FIX: Konvertiere factor nur wenn numerische Konvertierung erlaubt ***
-      else if (is.factor(var_values)) {
+      if (is.factor(var_values)) {
         var_values <- as.character(var_values)
         if (allow_numeric_conversion) {
           numeric_test <- suppressWarnings(as.numeric(var_values))
@@ -1722,7 +1715,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         numeric_values <- var_values
         cat("  Numerische Werte verwendet für", var, "\n")
       } else {
-        # Ursprüngliche Logik für nicht-haven_labelled Daten
+        # Character-Daten zu numeric konvertieren
         item_values <- as.character(var_values)
         
         # NEUE LOGIK: Unterscheide zwischen dichotom und ordinal basierend auf Kodierung
@@ -2501,10 +2494,36 @@ prepare_variable_types_minimal <- function(data, config) {
       
       # NUR numerische Konvertierung, keine Factors
       if (var_type == "numeric") {
+        # Hole min/max Werte aus Konfiguration
+        min_value <- config$variablen$min_value[i]
+        max_value <- config$variablen$max_value[i]
+        
         # Sichere numerische Konvertierung
         tryCatch({
           original_values <- data[[var_name]]
           numeric_values <- suppressWarnings(as.numeric(original_values))
+          
+          # *** NEU: Min/Max Filterung anwenden (konsistent mit Matrix-Variablen) ***
+          if (!is.na(min_value) || !is.na(max_value)) {
+            original_count <- sum(!is.na(numeric_values))
+            
+            # Filtere Werte außerhalb des Bereichs (setze auf NA)
+            if (!is.na(min_value)) {
+              numeric_values[!is.na(numeric_values) & numeric_values < min_value] <- NA
+            }
+            if (!is.na(max_value)) {
+              numeric_values[!is.na(numeric_values) & numeric_values > max_value] <- NA
+            }
+            
+            filtered_count <- sum(!is.na(numeric_values))
+            removed_count <- original_count - filtered_count
+            
+            if (removed_count > 0) {
+              cat("  ", var_name, "→ Min/Max Filter angewendet: ", removed_count, " Werte außerhalb Bereich [", 
+                  ifelse(is.na(min_value), "-∞", min_value), ", ", 
+                  ifelse(is.na(max_value), "∞", max_value), "] entfernt\n")
+            }
+          }
           
           # Prüfe Konvertierungserfolg
           successful_conversions <- sum(!is.na(numeric_values))
@@ -2749,10 +2768,10 @@ create_numeric_versions <- function(data, config) {
       var <- ordinal_vars$variable_name[i]
       
       if (var %in% names(data)) {
-        # Numerische Version erstellen - ROBUST für haven_labelled + AO-Pattern
+        # Numerische Version erstellen - ROBUST für AO-Pattern
         var_data <- data[[var]]
         
-        # Zu character konvertieren (haven_labelled -> character)
+        # Zu character konvertieren
         char_values <- as.character(var_data)
         
         # Numerische Extraktion mit Fallback-Strategien
@@ -3062,26 +3081,89 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   
   cat("Daten geladen. Dimensionen:", nrow(data), "Zeilen,", ncol(data), "Spalten\n")
   
-  # 1. ALLE VARIABLENNAMEN SANITIZEN (einmalig)
-  cat("Sanitize alle Variablennamen...\n")
+  # 1. CODEBOOK ERSTELLEN (VOR haven_labelled Konvertierung!)
+  cat("Erstelle Codebook aus Daten-Attributen (vor Konvertierung)...\n")
+  codebook_df <- data.frame(
+    Variable = names(data),
+    Label = sapply(data, function(x) {
+      label <- attr(x, "label")
+      if (is.null(label)) "" else as.character(label)
+    }),
+    Typ = sapply(data, function(x) paste(class(x), collapse = ", ")),
+    stringsAsFactors = FALSE
+  )
+  
+  # Wertelabels KORREKT extrahieren (Code = Label Format)
+  codebook_df$Wertelabels <- sapply(data, function(x) {
+    labels <- attr(x, "labels")
+    if (!is.null(labels) && length(labels) > 0) {
+      # WICHTIG: SPSS/haven speichert oft als c("Weiblich" = "AO01")
+      # Wir brauchen aber: c("AO01" = "Weiblich")
+      
+      label_names <- names(labels)  # "Weiblich", "Männlich", ...
+      label_values <- as.character(labels)  # "AO01", "AO02", ...
+      
+      # Prüfe ob umgekehrt (Heuristik: Werte sind kürzer als Namen)
+      avg_name_len <- mean(nchar(label_names))
+      avg_value_len <- mean(nchar(label_values))
+      
+      if (avg_name_len > avg_value_len && avg_value_len <= 10) {
+        # Umkehren: Code = Label
+        paste(label_values, "=", label_names, collapse = "; ")
+      } else {
+        # Normal: verwende wie sie sind
+        paste(label_names, "=", label_values, collapse = "; ")
+      }
+    } else {
+      "keine"
+    }
+  })
+  
+  # Speichere Codebook im Cache (global environment)
+  assign("global_codebook", codebook_df, envir = .GlobalEnv)
+  cat("✓ Codebook erstellt und gecacht für", nrow(codebook_df), "Variablen\n")
+  cat("  Variablen mit Labels:", sum(codebook_df$Wertelabels != "keine"), "\n")
+  
+  # Optional: Speichere Codebook auch als Datei für Dokumentation
+  if (exists("SAVE_CODEBOOK") && SAVE_CODEBOOK) {
+    codebook_file <- file.path(dirname(OUTPUT_FILE), "codebook_cache.rds")
+    saveRDS(codebook_df, codebook_file)
+    cat("  Codebook auch gespeichert als:", codebook_file, "\n")
+  }
+  
+  # 2. HAVEN_LABELLED ZENTRAL KONVERTIEREN (SPSS-Import)
+  cat("\nKonvertiere haven_labelled Variablen...\n")
+  haven_vars <- sapply(data, function(x) inherits(x, "haven_labelled"))
+  if (any(haven_vars)) {
+    library(haven)
+    # Konvertierung zu character (Labels sind bereits im Codebook gesichert!)
+    data <- data %>%
+      mutate(across(where(~inherits(., "haven_labelled")), as.character))
+    
+    cat("  ", sum(haven_vars), " haven_labelled Variablen zu character konvertiert\n")
+    cat("  ℹ Labels wurden im Codebook-Cache gesichert\n")
+  }
+  
+  # 3. ALLE VARIABLENNAMEN SANITIZEN (einmalig)
+  cat("\nSanitize alle Variablennamen...\n")
   names(data) <- make.names(names(data))
   
-  # 2. BASIS-DATENAUFBEREITUNG (ohne Custom Variables)
+  # 4. BASIS-DATENAUFBEREITUNG (ohne Custom Variables)
   data <- convert_text_nas(data, config)
   data <- apply_reverse_coding(data, config)
   data <- create_numeric_versions(data, config)
   
-  # 3. SURVEY-INDIZES ERSTELLEN (vor Custom Variables!)
+  # 5. SURVEY-INDIZES ERSTELLEN (vor Custom Variables!)
   cat("Erstelle Survey-Indizes...\n")
   index_result <- create_survey_indices(data, config, index_definitions)
   data <- index_result$data
   config <- index_result$config
   
-  # 4. CUSTOM VARIABLES ERSTELLEN (jetzt können sie auf Indices zugreifen)
+  # 5. CUSTOM VARIABLES ERSTELLEN (jetzt können sie auf Indices zugreifen)
   cat("Erstelle Custom-Variablen...\n")
   data <- add_custom_vars(data)
   
-  # 5. CONFIG AN ALLE VARIABLEN ANPASSEN (jetzt mit Indices + Custom Variables!)
+  # 6. CONFIG AN ALLE VARIABLEN ANPASSEN (jetzt mit Indices + Custom Variables!)
   cat("Aktualisiere Config für sanitierte Variablennamen...\n")
   config <- update_config_variable_names(config, data)
   
@@ -3101,7 +3183,8 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   
   # 7.5. GLOBALES CODEBOOK ERSTELLEN (einmalig für alle Analysen)
   cat("Erstelle globales Codebook für effiziente Label-Extraktion...\n")
-  create_global_codebook(data)
+  codebook_file <- if (exists("CODEBOOK_FILE") && file.exists(CODEBOOK_FILE)) CODEBOOK_FILE else NULL
+  create_global_codebook(data, codebook_file)
   
   # 8. WEITERE AUFBEREITUNG
   category_info <- auto_detect_categories(data, config)
@@ -4169,14 +4252,6 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
 extract_item_label <- function(data, var_name, matrix_name) {
   "Extrahiert das echte Label einer Matrix-Variable - nutzt zentrale get_variable_label Funktion"
   
-  # Verwende zentrale Label-Extraktion mit Item-Fokus
-  item_label <- get_variable_label(var_name, label_type = "item")
-  
-  # Falls Item-Extraktion erfolgreich war, verwende das Ergebnis
-  if (item_label != var_name) {
-    return(item_label)
-  }
-  
   # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
   if (exists("custom_var_labels", inherits = FALSE)) {
     if (var_name %in% names(custom_var_labels)) {
@@ -4187,33 +4262,8 @@ extract_item_label <- function(data, var_name, matrix_name) {
     }
   }
   
-  # 2. PRIORITÄT: Variable Labels aus Labelled Package (kurz)
-  if (requireNamespace("labelled", quietly = TRUE)) {
-    if (labelled::is.labelled(data[[var_name]])) {
-      var_labels <- labelled::var_label(data[[var_name]])
-      if (!is.null(var_labels) && var_labels != "") {
-        # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
-        bracket_match <- regexpr("\\[([^\\]]+)\\]", var_labels)
-        if (bracket_match > 0) {
-          bracket_start <- bracket_match[1] + 1
-          bracket_length <- attr(bracket_match, "match.length") - 2
-          item_label <- substr(var_labels, bracket_start, bracket_start + bracket_length - 1)
-          
-          if (nchar(item_label) > 5 && item_label != var_name) {
-            return(item_label)
-          }
-        }
-        
-        # Fallback: Kürze auf max 100 Zeichen
-        shortened <- substr(var_labels, 1, 100)
-        if (shortened != var_name && nchar(var_labels) > 10) {
-          return(shortened)
-        }
-      }
-    }
-  }
-  
-  # 3. PRIORITÄT: Variable Labels aus Attributen (mit intelligenter Item-Label-Extraktion)
+  # 2. PRIORITÄT: Variable Labels direkt aus Daten-Attributen (BEVOR Codebook)
+  # Dies ist wichtiger als das Codebook, da es die originalen SPSS-Labels enthält
   var_label <- attr(data[[var_name]], "label")
   
   if (!is.null(var_label) && var_label != "" && var_label != var_name) {
@@ -4228,12 +4278,14 @@ extract_item_label <- function(data, var_name, matrix_name) {
       bracket_length <- attr(bracket_match, "match.length") - 2  # Ohne die Klammern
       item_label <- substr(var_label, bracket_start, bracket_start + bracket_length - 1)
       
-      if (nchar(item_label) > 5 && item_label != var_name) {  # Sinnvolle Länge
+      # Prüfe ob das extrahierte Label sinnvoll ist (nicht nur "Subquestion 1" etc.)
+      if (nchar(item_label) > 5 && item_label != var_name && 
+          !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
         return(item_label)
       }
     }
     
-    # Fallback: Normale Label-Verarbeitung
+    # Fallback: Verwende das volle Label wenn es nicht zu lang ist
     if (nchar(var_label) < 150) {
       # Kurz genug - verwende wie es ist
       return(var_label)
@@ -4251,11 +4303,67 @@ extract_item_label <- function(data, var_name, matrix_name) {
     }
   }
   
-  # *** PRÜFE ALLE MÖGLICHEN LABEL-ATTRIBUTE ***
+  # 3. PRIORITÄT: Variable Labels aus Labelled Package
+  if (requireNamespace("labelled", quietly = TRUE)) {
+    if (labelled::is.labelled(data[[var_name]])) {
+      var_labels <- labelled::var_label(data[[var_name]])
+      if (!is.null(var_labels) && var_labels != "") {
+        # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
+        bracket_match <- regexpr("\\[([^\\]]+)\\]", var_labels)
+        if (bracket_match > 0) {
+          bracket_start <- bracket_match[1] + 1
+          bracket_length <- attr(bracket_match, "match.length") - 2
+          item_label <- substr(var_labels, bracket_start, bracket_start + bracket_length - 1)
+          
+          if (nchar(item_label) > 5 && item_label != var_name &&
+              !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
+            return(item_label)
+          }
+        }
+        
+        # Fallback: Kürze auf max 100 Zeichen
+        shortened <- substr(var_labels, 1, 100)
+        if (shortened != var_name && nchar(var_labels) > 10) {
+          return(shortened)
+        }
+      }
+    }
+  }
+  
+  # 4. PRIORITÄT: Verwende zentrale Label-Extraktion mit Item-Fokus aus Codebook
+  item_label <- get_variable_label(var_name, label_type = "item")
+  
+  # Falls Item-Extraktion erfolgreich war UND nicht generisch, verwende das Ergebnis
+  if (item_label != var_name && !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
+    return(item_label)
+  }
+  
+  # Falls Codebook nur generisches Label hat, versuche das volle Label
+  full_label <- get_variable_label(var_name, label_type = "full")
+  if (full_label != var_name && !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", full_label)) {
+    # Extrahiere Item-Teil aus vollem Label
+    bracket_match <- regexpr("\\[([^\\]]+)\\]", full_label)
+    if (bracket_match > 0) {
+      bracket_start <- bracket_match[1] + 1
+      bracket_length <- attr(bracket_match, "match.length") - 2
+      item_label <- substr(full_label, bracket_start, bracket_start + bracket_length - 1)
+      
+      if (nchar(item_label) > 5 && item_label != var_name &&
+          !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
+        return(item_label)
+      }
+    }
+    # Verwende volles Label wenn nicht zu lang
+    if (nchar(full_label) < 150) {
+      return(full_label)
+    }
+  }
+  
+  # 5. PRIORITÄT: Prüfe alle möglichen Label-Attribute
   all_attrs <- attributes(data[[var_name]])
   
   # Prüfe verschiedene Label-Attribute
-  label_attrs <- c("label", "labels", "var.labels", "variable.labels", "description")
+  label_attrs <- c("labels", "var.labels", "variable.labels", "description")
   for (attr_name in label_attrs) {
     if (attr_name %in% names(all_attrs)) {
       attr_value <- all_attrs[[attr_name]]
@@ -4268,7 +4376,8 @@ extract_item_label <- function(data, var_name, matrix_name) {
           bracket_length <- attr(bracket_match, "match.length") - 2
           item_label <- substr(attr_value, bracket_start, bracket_start + bracket_length - 1)
           
-          if (nchar(item_label) > 5 && item_label != var_name) {
+          if (nchar(item_label) > 5 && item_label != var_name &&
+              !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
             return(item_label)
           }
         }
@@ -4284,13 +4393,13 @@ extract_item_label <- function(data, var_name, matrix_name) {
     }
   }
   
-  # 4. PRIORITÄT: Intelligente Extraktion aus Variablennamen
+  # 6. PRIORITÄT: Intelligente Extraktion aus Variablennamen
   intelligent_label <- create_intelligent_label(var_name, matrix_name)
   if (intelligent_label != var_name) {
     return(intelligent_label)
   }
   
-  # 5. FALLBACK: Formatierter Variablenname
+  # 7. FALLBACK: Formatierter Variablenname
   fallback_label <- create_fallback_label(var_name, matrix_name)
   return(fallback_label)
 }
@@ -7345,8 +7454,8 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
     
     cat("✓ Verwende Text-Variable:", text_var, "| Sort-Variable:", sort_var, "\n")
     
-    # Extrahiere Textantworten (unverändert)
-    text_result <- extract_text_responses_simple(current_data, text_var, sort_var, min_length, include_empty)
+    # Extrahiere Textantworten
+    text_result <- extract_text_responses_simple(current_data, text_var, sort_var, min_length, include_empty, custom_val_labels, config)
     
     if (!is.null(text_result)) {
       # Filter-Info zum Ergebnis hinzufügen
@@ -7372,7 +7481,7 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
 }
 
 # Textantworten extrahieren
-extract_text_responses_simple <- function(data, text_var, sort_var, min_length, include_empty, custom_val_labels = NULL) {
+extract_text_responses_simple <- function(data, text_var, sort_var, min_length, include_empty, custom_val_labels = NULL, config = NULL) {
   
   cat("  Verwende Text-Variable:", text_var, "\n")
   
@@ -7387,31 +7496,84 @@ extract_text_responses_simple <- function(data, text_var, sort_var, min_length, 
   if (!is.na(sort_var) && sort_var != "" && sort_var %in% names(data)) {
     text_data$Sort_Kategorie <- as.character(data[[sort_var]])
     
-    # Labels für Sort-Variable mit Priorisierung: RDS -> custom_val_labels -> Code
-    labels <- get_value_labels_with_priority(data, sort_var, NULL)
+    # Labels für Sort-Variable mit mehreren Strategien
+    labels <- NULL
     
-    # Falls keine RDS-Labels, versuche custom_val_labels
+    # STRATEGIE 1: Globales Codebook (primär - aus SPSS-Labels)
+    if (exists("global_codebook", envir = .GlobalEnv)) {
+      codebook <- get("global_codebook", envir = .GlobalEnv)
+      if (sort_var %in% codebook$Variable) {
+        wertelabels <- codebook$Wertelabels[codebook$Variable == sort_var]
+        if (!is.na(wertelabels) && wertelabels != "keine" && wertelabels != "") {
+          cat("  -> Wertelabels aus Codebook:", wertelabels, "\n")
+          labels <- parse_coding(wertelabels, auto_reverse = TRUE)
+          if (!is.null(labels) && length(labels) > 0) {
+            cat("  -> Labels aus globalem Codebook für", sort_var, "gefunden\n")
+          }
+        }
+      }
+    }
+    
+    # STRATEGIE 2: Config-Coding (Override - manuell definiert)
+    if ((is.null(labels) || length(labels) == 0) && !is.null(config) && "variablen" %in% names(config)) {
+      var_config <- config$variablen[config$variablen$variable_name == sort_var, ]
+      if (nrow(var_config) > 0 && !is.na(var_config$coding[1]) && var_config$coding[1] != "") {
+        cat("  -> Coding aus Config (Override):", var_config$coding[1], "\n")
+        labels <- parse_coding(var_config$coding[1], auto_reverse = TRUE)
+        if (!is.null(labels) && length(labels) > 0) {
+          cat("  -> Labels aus Config-Coding für", sort_var, "gefunden (Override)\n")
+        }
+      }
+    }
+    
+    # STRATEGIE 3: RDS-Attribute (Fallback)
+    if (is.null(labels) || length(labels) == 0) {
+      labels <- get_value_labels_with_priority(data, sort_var, NULL)
+    }
+    
+    # STRATEGIE 4: custom_val_labels (Fallback)
     if ((is.null(labels) || length(labels) == 0) && !is.null(custom_val_labels) && sort_var %in% names(custom_val_labels)) {
       labels <- custom_val_labels[[sort_var]]
+      cat("  -> Labels aus custom_val_labels für", sort_var, "gefunden\n")
+    }
+    
+    # Debug: Zeige gefundene Labels
+    if (!is.null(labels) && length(labels) > 0) {
+      cat("    Verfügbare Labels:", paste(names(labels)[1:min(3, length(labels))], "=", labels[1:min(3, length(labels))], collapse="; "), "...\n")
+    } else {
+      cat("    ⚠ Keine Labels gefunden für", sort_var, "- verwende Codes\n")
     }
     
     if (!is.null(labels) && length(labels) > 0) {
       text_data$Sort_Kategorie_Label <- NA_character_
       
-      # Für jeden Code das passende Label finden (wie in create_nominal_coded_table)
+      # Debug: Zeige eindeutige Codes in den Daten
+      unique_codes <- unique(text_data$Sort_Kategorie[!is.na(text_data$Sort_Kategorie)])
+      cat("    Eindeutige Codes in Daten:", paste(head(unique_codes, 5), collapse = ", "), "\n")
+      cat("    Label-Keys (names):", paste(head(names(labels), 5), collapse = ", "), "\n")
+      
+      # Für jeden Code das passende Label finden
+      matched_count <- 0
       for (i in seq_len(nrow(text_data))) {
         code <- as.character(text_data$Sort_Kategorie[i])
+        
+        # Skip NA
+        if (is.na(code) || code == "") {
+          next
+        }
+        
         text_data$Sort_Kategorie_Label[i] <- code  # Default: Verwende Code als Label
         
-        # Direkte Übereinstimmung: "1" -> "1"
+        # Direkte Übereinstimmung: "AO01" -> "AO01"
         if (code %in% names(labels)) {
           text_data$Sort_Kategorie_Label[i] <- labels[code]
+          matched_count <- matched_count + 1
           next
         }
         
         # Pattern: AO01, AO02, AO03 -> extrahiere Nummer und versuche Match
-        if (grepl("^[A-Z]+0*[0-9]+$", code)) {
-          # Extrahiere Nummer: AO01 -> 1, AO02 -> 2, A001 -> 1
+        if (grepl("^[A-Z]+[0-9]+$", code)) {
+          # Extrahiere Nummer: AO01 -> 1, AO02 -> 2
           num_part <- gsub("^[A-Z]+0*", "", code)
           
           # Versuche verschiedene Formate
@@ -7426,11 +7588,14 @@ extract_text_responses_simple <- function(data, text_var, sort_var, min_length, 
           for (candidate in candidates) {
             if (candidate %in% names(labels)) {
               text_data$Sort_Kategorie_Label[i] <- labels[candidate]
+              matched_count <- matched_count + 1
               break
             }
           }
         }
       }
+      
+      cat("    ✓ Labels zugeordnet:", matched_count, "von", sum(!is.na(text_data$Sort_Kategorie) & text_data$Sort_Kategorie != ""), "Codes\n")
     } else {
       text_data$Sort_Kategorie_Label <- text_data$Sort_Kategorie
     }
@@ -8521,6 +8686,145 @@ export_text_responses <- function(wb, text_results, header_style, table_style, t
 }
 
 # =============================================================================
+# SEPARATE EXCEL-DATEI FÜR OFFENE TEXTANTWORTEN
+# =============================================================================
+# 
+# Diese Funktion exportiert offene Textantworten in eine separate Excel-Datei
+# "Offene_Textantworten.xlsx" im gleichen Verzeichnis wie OUTPUT_FILE.
+# 
+# FEATURES:
+# - Ein Sheet pro Textfrage (benannt nach Variablennamen, max 31 Zeichen)
+# - Daten beginnen in A1 mit Header-Zeile
+# - Spalten: [Kategorie-Label] | Textantwort | Zeichen
+# - Erste Spalte zeigt Label der Sortiervariable statt "Kategorie"
+# - Automatische Spaltenbreiten (25 | 80 | 10)
+# - Freeze-Panes für Header-Zeile
+# - Formatierung mit Styles (Header blau, Tabelle mit Rahmen)
+# 
+# KONFIGURATION:
+# - Aktivierung über EXPORT_OPEN_TEXT = TRUE in Analysis-Cockpit.R
+# - Textfragen werden in Config-Excel Sheet "Textantworten" definiert
+# 
+# =============================================================================
+
+export_open_text_responses_separate <- function(text_results) {
+  "Exportiert offene Textantworten in separate Excel-Datei mit einem Sheet pro Frage"
+  
+  if (!exists("EXPORT_OPEN_TEXT") || !EXPORT_OPEN_TEXT) {
+    cat("Export separater Textantworten-Datei ist deaktiviert.\n")
+    return()
+  }
+  
+  if (is.null(text_results) || length(text_results) == 0) {
+    cat("Keine Textantworten zum Exportieren vorhanden.\n")
+    return()
+  }
+  
+  cat("\nExportiere offene Textantworten in separate Excel-Datei...\n")
+  
+  # Erstelle Dateinamen basierend auf OUTPUT_FILE
+  output_dir <- dirname(OUTPUT_FILE)
+  output_base <- tools::file_path_sans_ext(basename(OUTPUT_FILE))
+  text_output_file <- file.path(output_dir, "Offene_Textantworten.xlsx")
+  
+  # Erstelle neue Workbook
+  wb <- createWorkbook()
+  
+  # Styles definieren
+  header_style <- createStyle(
+    fontSize = 11,
+    fontColour = "#FFFFFF",
+    fgFill = "#4472C4",
+    halign = "left",
+    valign = "center",
+    textDecoration = "bold",
+    border = "TopBottomLeftRight",
+    borderColour = "#4472C4"
+  )
+  
+  table_style <- createStyle(
+    fontSize = 10,
+    halign = "left",
+    valign = "top",
+    wrapText = TRUE,
+    border = "TopBottomLeftRight",
+    borderColour = "#D0D0D0"
+  )
+  
+  # Für jede Textanalyse ein Sheet erstellen
+  for (analysis_name in names(text_results)) {
+    result <- text_results[[analysis_name]]
+    
+    # Sheet-Name: Verwende Variablennamen (max 31 Zeichen für Excel)
+    sheet_name <- substr(result$text_variable, 1, 31)
+    
+    cat("  Erstelle Sheet:", sheet_name, "\n")
+    
+    # Sheet hinzufügen
+    addWorksheet(wb, sheet_name)
+    
+    # Hole Sort-Variable Label für Spaltenüberschrift
+    sort_var_label <- if (!is.na(result$sort_variable) && result$sort_variable != "") {
+      # Versuche Label aus globalem Codebook zu holen
+      if (exists("global_codebook", envir = .GlobalEnv)) {
+        codebook <- get("global_codebook", envir = .GlobalEnv)
+        if (result$sort_variable %in% codebook$Variable) {
+          label <- codebook$Label[codebook$Variable == result$sort_variable]
+          if (!is.null(label) && label != "" && label != result$sort_variable) {
+            label
+          } else {
+            result$sort_variable
+          }
+        } else {
+          result$sort_variable
+        }
+      } else {
+        result$sort_variable
+      }
+    } else {
+      "Kategorie"
+    }
+    
+    # Daten vorbereiten
+    if (!is.null(result$responses) && nrow(result$responses) > 0) {
+      export_data <- result$responses
+      
+      # Spaltenüberschriften anpassen
+      names(export_data)[1] <- sort_var_label
+      
+      # Daten ab A1 schreiben
+      writeData(wb, sheet_name, export_data, startRow = 1, startCol = 1, headerStyle = header_style)
+      
+      # Styles anwenden
+      addStyle(wb, sheet_name, header_style, rows = 1, cols = 1:3, gridExpand = TRUE)
+      addStyle(wb, sheet_name, table_style, rows = 2:(nrow(export_data) + 1), cols = 1:3, gridExpand = TRUE)
+      
+      # Spaltenbreiten anpassen
+      setColWidths(wb, sheet_name, cols = 1, widths = 25)  # Kategorie
+      setColWidths(wb, sheet_name, cols = 2, widths = 80)  # Textantwort
+      setColWidths(wb, sheet_name, cols = 3, widths = 10)  # Zeichen
+      
+      # Freeze erste Zeile (Header)
+      freezePane(wb, sheet_name, firstRow = TRUE)
+      
+      cat("    ✓", nrow(export_data), "Textantworten exportiert\n")
+    } else {
+      # Leeres Sheet mit Hinweis
+      writeData(wb, sheet_name, "Keine Textantworten verfügbar", startRow = 1, startCol = 1)
+      cat("    ⚠ Keine Textantworten verfügbar\n")
+    }
+  }
+  
+  # Workbook speichern
+  tryCatch({
+    saveWorkbook(wb, text_output_file, overwrite = TRUE)
+    cat("✓ Offene Textantworten exportiert nach:", text_output_file, "\n")
+  }, error = function(e) {
+    cat("✗ Fehler beim Speichern der Textantworten-Datei:", e$message, "\n")
+  })
+}
+
+# =============================================================================
 # NEUE FUNKTION: FINALEN DATENSATZ SPEICHERN
 # =============================================================================
 
@@ -8683,6 +8987,11 @@ main <- function() {
       text_results, 
       variable_overview
     )
+    
+    # *** SEPARATE TEXTANTWORTEN-DATEI EXPORTIEREN ***
+    if (exists("EXPORT_OPEN_TEXT") && EXPORT_OPEN_TEXT && !is.null(text_results) && length(text_results) > 0) {
+      export_open_text_responses_separate(text_results)
+    }
     
     # *** FINALEN DATENSATZ SPEICHERN ***
     save_final_dataset(prepared_data$data, prepared_data$config)
