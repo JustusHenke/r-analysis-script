@@ -4345,6 +4345,27 @@ extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, d
       cat("   📋 Daten-Attribut 'label':", var_label, "\n")
     } else {
       cat("   ❌ Kein Daten-Attribut 'label' gefunden\n")
+      cat("   🔍 Versuche Label aus globalem Codebook zu holen...\n")
+    }
+  }
+  
+  # *** NEUE PRIORITÄT: Falls kein Attribut, hole aus globalem Codebook ***
+  if (is.null(var_label) || var_label == "" || var_label == var_name) {
+    if (exists("global_codebook", envir = .GlobalEnv)) {
+      codebook <- get("global_codebook", envir = .GlobalEnv)
+      if (var_name %in% codebook$Variable) {
+        codebook_label <- codebook$Label[codebook$Variable == var_name]
+        if (!is.na(codebook_label) && codebook_label != "" && codebook_label != var_name) {
+          var_label <- codebook_label
+          if (debug) cat("   ✅ Label aus globalem Codebook gefunden:", substr(var_label, 1, 80), "\n")
+        } else if (debug) {
+          cat("   ❌ Variable im Codebook, aber kein Label vorhanden\n")
+        }
+      } else if (debug) {
+        cat("   ❌ Variable nicht im globalen Codebook gefunden\n")
+      }
+    } else if (debug) {
+      cat("   ❌ Kein globales Codebook vorhanden\n")
     }
   }
   
