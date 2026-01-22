@@ -4292,12 +4292,19 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
 # =============================================================================
 
 extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, debug = FALSE) {
-  "Extrahiert das echte Label einer Matrix-Variable - nutzt zentrale get_variable_label Funktion"
+  "Extrahiert das echte Label einer Matrix-Variable
+  
+  PRIORITÄTEN (von höchster zu niedrigster):
+  1. Config item_labels (explizite Überschreibung)
+  2. Globales Codebook (Standard-Quelle für alle Labels)
+  3. Intelligente Extraktion aus Variablennamen (Fallback)
+  "
   
   if (debug) cat("🔍 extract_item_label für:", var_name, "\n")
   
-  # 0. PRIORITÄT: Item-Labels aus Config (NEUE FUNKTION)
-  # Format in Config: item_labels = "SQ001=Erstes Item;SQ002=Zweites Item"
+  # ============================================================================
+  # PRIORITÄT 1: Config item_labels (explizite Überschreibung)
+  # ============================================================================
   if (!is.null(var_config) && "item_labels" %in% names(var_config)) {
     item_labels_str <- var_config$item_labels
     if (!is.na(item_labels_str) && item_labels_str != "") {
@@ -4325,196 +4332,81 @@ extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, d
     }
   }
   
-  # 1. PRIORITÄT: Custom Variable Labels (explizit definiert)
-  if (exists("custom_var_labels", inherits = FALSE)) {
-    if (var_name %in% names(custom_var_labels)) {
-      custom_label <- custom_var_labels[[var_name]]
-      if (!is.null(custom_label) && custom_label != "") {
-        if (debug) cat("   ✅ Custom Label gefunden:", custom_label, "\n")
-        return(custom_label)
-      }
-    }
-  }
-  
-  # 2. PRIORITÄT: Variable Labels direkt aus Daten-Attributen (BEVOR Codebook)
-  # Dies ist wichtiger als das Codebook, da es die originalen SPSS-Labels enthält
-  var_label <- attr(data[[var_name]], "label")
-  
-  if (debug) {
-    if (!is.null(var_label)) {
-      cat("   📋 Daten-Attribut 'label':", var_label, "\n")
-    } else {
-      cat("   ❌ Kein Daten-Attribut 'label' gefunden\n")
-      cat("   🔍 Versuche Label aus globalem Codebook zu holen...\n")
-    }
-  }
-  
-  # *** NEUE PRIORITÄT: Falls kein Attribut, hole aus globalem Codebook ***
-  if (is.null(var_label) || var_label == "" || var_label == var_name) {
-    if (exists("global_codebook", envir = .GlobalEnv)) {
-      codebook <- get("global_codebook", envir = .GlobalEnv)
-      if (var_name %in% codebook$Variable) {
-        codebook_label <- codebook$Label[codebook$Variable == var_name]
-        if (!is.na(codebook_label) && codebook_label != "" && codebook_label != var_name) {
-          var_label <- codebook_label
-          if (debug) cat("   ✅ Label aus globalem Codebook gefunden:", substr(var_label, 1, 80), "\n")
-        } else if (debug) {
-          cat("   ❌ Variable im Codebook, aber kein Label vorhanden\n")
-        }
-      } else if (debug) {
-        cat("   ❌ Variable nicht im globalen Codebook gefunden\n")
-      }
-    } else if (debug) {
-      cat("   ❌ Kein globales Codebook vorhanden\n")
-    }
-  }
-  
-  if (!is.null(var_label) && var_label != "" && var_label != var_name) {
+  # ============================================================================
+  # PRIORITÄT 2: Globales Codebook (Standard-Quelle)
+  # ============================================================================
+  if (exists("global_codebook", envir = .GlobalEnv)) {
+    codebook <- get("global_codebook", envir = .GlobalEnv)
     
-    if (debug) cat("   🔍 Verarbeite Label, Länge:", nchar(var_label), "\n")
-    
-    # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
-    # Pattern: "[Item-Text] Fragentext..." -> "Item-Text"
-    bracket_match <- regexpr("\\[([^\\]]+)\\]", var_label)
-    
-    if (bracket_match > 0) {
-      # Extrahiere Text zwischen eckigen Klammern
-      bracket_start <- bracket_match[1] + 1  # Nach der öffnenden Klammer
-      bracket_length <- attr(bracket_match, "match.length") - 2  # Ohne die Klammern
-      item_label <- substr(var_label, bracket_start, bracket_start + bracket_length - 1)
+    if (var_name %in% codebook$Variable) {
+      codebook_label <- codebook$Label[codebook$Variable == var_name]
       
-      if (debug) cat("   📦 Extrahiertes Klammer-Label:", item_label, "\n")
-      
-      # Prüfe ob das extrahierte Label sinnvoll ist (nicht nur "Subquestion 1" etc.)
-      if (nchar(item_label) > 5 && item_label != var_name && 
-          !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
-        if (debug) cat("   ✅ Verwende Klammer-Label:", item_label, "\n")
-        return(item_label)
-      } else if (debug) {
-        cat("   ❌ Klammer-Label ist generisch oder zu kurz\n")
-      }
-    } else if (debug) {
-      cat("   ❌ Keine eckigen Klammern gefunden\n")
-    }
-    
-    # Fallback: Verwende das volle Label wenn es nicht zu lang ist
-    if (nchar(var_label) < 150) {
-      # Kurz genug - verwende wie es ist
-      if (debug) cat("   ✅ Verwende volles Label (kurz):", substr(var_label, 1, 50), "...\n")
-      return(var_label)
-    } else {
-      # Zu lang - kürze auf ersten sinnvollen Satz/Teil
-      # Versuche bis zum ersten Punkt oder 100 Zeichen
-      first_sentence_end <- gregexpr("\\.", var_label)[[1]][1]
-      if (first_sentence_end > 0 && first_sentence_end < 150) {
-        shortened <- substr(var_label, 1, first_sentence_end)
-      } else {
-        shortened <- substr(var_label, 1, 100)
-      }
-      shortened <- trimws(shortened)
-      if (debug) cat("   ✅ Verwende gekürztes Label:", shortened, "\n")
-      return(shortened)
-    }
-  }
-  
-  # 3. PRIORITÄT: Variable Labels aus Labelled Package
-  if (requireNamespace("labelled", quietly = TRUE)) {
-    if (labelled::is.labelled(data[[var_name]])) {
-      var_labels <- labelled::var_label(data[[var_name]])
-      if (!is.null(var_labels) && var_labels != "") {
-        # *** EXTRAHIERE ITEM-LABEL AUS ECKIGEN KLAMMERN ***
-        bracket_match <- regexpr("\\[([^\\]]+)\\]", var_labels)
+      if (!is.na(codebook_label) && codebook_label != "" && codebook_label != var_name) {
+        if (debug) cat("   📚 Label aus globalem Codebook:", substr(codebook_label, 1, 80), "\n")
+        
+        # Extrahiere Item-Label aus eckigen Klammern falls vorhanden
+        # Pattern: "[Item-Text] Fragentext..." -> "Item-Text"
+        bracket_match <- regexpr("\\[([^\\]]+)\\]", codebook_label)
+        
         if (bracket_match > 0) {
           bracket_start <- bracket_match[1] + 1
           bracket_length <- attr(bracket_match, "match.length") - 2
-          item_label <- substr(var_labels, bracket_start, bracket_start + bracket_length - 1)
+          item_label <- substr(codebook_label, bracket_start, bracket_start + bracket_length - 1)
           
-          if (nchar(item_label) > 5 && item_label != var_name &&
+          if (debug) cat("   📦 Extrahiertes Klammer-Label:", item_label, "\n")
+          
+          # Prüfe ob das extrahierte Label sinnvoll ist (nicht nur "Subquestion 1" etc.)
+          if (nchar(item_label) > 5 && item_label != var_name && 
               !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
+            if (debug) cat("   ✅ Verwende Klammer-Label aus Codebook\n")
             return(item_label)
+          } else if (debug) {
+            cat("   ⚠ Klammer-Label ist generisch, verwende volles Label\n")
           }
         }
         
-        # Fallback: Kürze auf max 100 Zeichen
-        shortened <- substr(var_labels, 1, 100)
-        if (shortened != var_name && nchar(var_labels) > 10) {
-          return(shortened)
-        }
-      }
-    }
-  }
-  
-  # 4. PRIORITÄT: Verwende zentrale Label-Extraktion mit Item-Fokus aus Codebook
-  item_label <- get_variable_label(var_name, label_type = "item")
-  
-  # Falls Item-Extraktion erfolgreich war UND nicht generisch, verwende das Ergebnis
-  if (item_label != var_name && !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
-    return(item_label)
-  }
-  
-  # Falls Codebook nur generisches Label hat, versuche das volle Label
-  full_label <- get_variable_label(var_name, label_type = "full")
-  if (full_label != var_name && !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", full_label)) {
-    # Extrahiere Item-Teil aus vollem Label
-    bracket_match <- regexpr("\\[([^\\]]+)\\]", full_label)
-    if (bracket_match > 0) {
-      bracket_start <- bracket_match[1] + 1
-      bracket_length <- attr(bracket_match, "match.length") - 2
-      item_label <- substr(full_label, bracket_start, bracket_start + bracket_length - 1)
-      
-      if (nchar(item_label) > 5 && item_label != var_name &&
-          !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
-        return(item_label)
-      }
-    }
-    # Verwende volles Label wenn nicht zu lang
-    if (nchar(full_label) < 150) {
-      return(full_label)
-    }
-  }
-  
-  # 5. PRIORITÄT: Prüfe alle möglichen Label-Attribute
-  all_attrs <- attributes(data[[var_name]])
-  
-  # Prüfe verschiedene Label-Attribute
-  label_attrs <- c("labels", "var.labels", "variable.labels", "description")
-  for (attr_name in label_attrs) {
-    if (attr_name %in% names(all_attrs)) {
-      attr_value <- all_attrs[[attr_name]]
-      
-      if (!is.null(attr_value) && attr_value != "" && attr_value != var_name) {
-        # Versuche Klammer-Extraktion
-        bracket_match <- regexpr("\\[([^\\]]+)\\]", attr_value)
-        if (bracket_match > 0) {
-          bracket_start <- bracket_match[1] + 1
-          bracket_length <- attr(bracket_match, "match.length") - 2
-          item_label <- substr(attr_value, bracket_start, bracket_start + bracket_length - 1)
-          
-          if (nchar(item_label) > 5 && item_label != var_name &&
-              !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
-            return(item_label)
-          }
-        }
-        
-        # Fallback: Verwende Attribut direkt (gekürzt)
-        if (nchar(attr_value) < 150) {
-          return(attr_value)
+        # Fallback: Verwende das volle Label wenn es nicht zu lang ist
+        if (nchar(codebook_label) < 150) {
+          if (debug) cat("   ✅ Verwende volles Label aus Codebook\n")
+          return(codebook_label)
         } else {
-          shortened <- substr(attr_value, 1, 100)
+          # Zu lang - kürze auf ersten sinnvollen Satz/Teil
+          first_sentence_end <- gregexpr("\\.", codebook_label)[[1]][1]
+          if (first_sentence_end > 0 && first_sentence_end < 150) {
+            shortened <- substr(codebook_label, 1, first_sentence_end)
+          } else {
+            shortened <- substr(codebook_label, 1, 100)
+          }
+          shortened <- trimws(shortened)
+          if (debug) cat("   ✅ Verwende gekürztes Label aus Codebook:", shortened, "\n")
           return(shortened)
         }
+      } else if (debug) {
+        cat("   ⚠ Variable im Codebook, aber kein Label vorhanden\n")
       }
+    } else if (debug) {
+      cat("   ⚠ Variable nicht im globalen Codebook gefunden\n")
     }
+  } else if (debug) {
+    cat("   ⚠ Kein globales Codebook vorhanden\n")
   }
   
-  # 6. PRIORITÄT: Intelligente Extraktion aus Variablennamen
+  # ============================================================================
+  # PRIORITÄT 3: Intelligente Extraktion aus Variablennamen (Fallback)
+  # ============================================================================
+  if (debug) cat("   🔧 Verwende intelligente Label-Extraktion aus Variablennamen\n")
+  
   intelligent_label <- create_intelligent_label(var_name, matrix_name)
   if (intelligent_label != var_name) {
+    if (debug) cat("   ✅ Intelligentes Label:", intelligent_label, "\n")
     return(intelligent_label)
   }
   
-  # 7. FALLBACK: Formatierter Variablenname
+  # ============================================================================
+  # LETZTER FALLBACK: Formatierter Variablenname
+  # ============================================================================
   fallback_label <- create_fallback_label(var_name, matrix_name)
+  if (debug) cat("   ⚠ Fallback Label:", fallback_label, "\n")
   return(fallback_label)
 }
 
