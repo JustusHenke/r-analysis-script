@@ -1428,7 +1428,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     
     for (var in matrix_vars) {
       # Label extrahieren - VERWENDE GLEICHE LOGIK WIE BEI ORDINALEN MATRIX
-      item_label <- extract_item_label(data, var, matrix_name, debug = TRUE)
+      item_label <- extract_item_label(data, var, matrix_name, debug = FALSE)
       
       # FALLBACK: Falls Label schlecht ist, versuche bessere Extraktion
       if (grepl("^(Item|Item:|Subquestion)", item_label)) {
@@ -1510,7 +1510,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     
     for (var in matrix_vars) {
       # Label extrahieren
-      item_label <- extract_item_label(data, var, matrix_name, debug = TRUE)
+      item_label <- extract_item_label(data, var, matrix_name, debug = FALSE)
       
       # Daten für dieses Item filtern (Datentyp-Normalisierung bereits erfolgt)
       var_values <- data[[var]]
@@ -1695,7 +1695,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     numeric_stats_rows <- list()
     
     for (var in matrix_vars) {
-      item_label <- extract_item_label(data, var, matrix_name, debug = TRUE)
+      item_label <- extract_item_label(data, var, matrix_name, debug = FALSE)
       
       # *** FIX: Initialize stats_row to prevent "object not found" errors ***
       stats_row <- NULL
@@ -4344,7 +4344,7 @@ extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, d
       if (!is.na(codebook_label) && codebook_label != "" && codebook_label != var_name) {
         if (debug) cat("   📚 Label aus globalem Codebook:", substr(codebook_label, 1, 80), "\n")
         
-        # Extrahiere Item-Label aus eckigen Klammern falls vorhanden
+        # *** BEREINIGUNG: Extrahiere NUR den Text in eckigen Klammern ***
         # Pattern: "[Item-Text] Fragentext..." -> "Item-Text"
         bracket_match <- regexpr("\\[([^\\]]+)\\]", codebook_label)
         
@@ -4356,13 +4356,15 @@ extract_item_label <- function(data, var_name, matrix_name, var_config = NULL, d
           if (debug) cat("   📦 Extrahiertes Klammer-Label:", item_label, "\n")
           
           # Prüfe ob das extrahierte Label sinnvoll ist (nicht nur "Subquestion 1" etc.)
-          if (nchar(item_label) > 5 && item_label != var_name && 
+          if (nchar(item_label) > 3 && item_label != var_name && 
               !grepl("^(Subquestion|Item|SQ)\\s*\\d+$", item_label)) {
-            if (debug) cat("   ✅ Verwende Klammer-Label aus Codebook\n")
+            if (debug) cat("   ✅ Verwende bereinigtes Klammer-Label\n")
             return(item_label)
           } else if (debug) {
             cat("   ⚠ Klammer-Label ist generisch, verwende volles Label\n")
           }
+        } else if (debug) {
+          cat("   ℹ Keine eckigen Klammern gefunden, verwende Label wie es ist\n")
         }
         
         # Fallback: Verwende das volle Label wenn es nicht zu lang ist
