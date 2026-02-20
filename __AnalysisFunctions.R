@@ -5116,12 +5116,53 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     complete_data[[var2]] <- convert_factor_to_numeric_safe(complete_data[[var2]], var2, config)
   }
   
-  # Konvertiere zu numerisch falls nötig (bestehende Logik)
+  # Konvertiere zu numerisch falls nötig - INTELLIGENTE KONVERTIERUNG
   if (var1_is_numeric && !is.numeric(complete_data[[var1]])) {
-    complete_data[[var1]] <- suppressWarnings(as.numeric(as.character(complete_data[[var1]])))
+    cat("  → Konvertiere", var1, "zu numerisch (ordinal/Likert)\n")
+    
+    # Verwende gleiche Logik wie create_numeric_versions()
+    char_values <- as.character(complete_data[[var1]])
+    numeric_values <- rep(NA_real_, length(char_values))
+    
+    for (j in seq_along(char_values)) {
+      val <- char_values[j]
+      if (!is.na(val) && val != "") {
+        if (grepl("^AO\\d+$", val)) {
+          numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+        } else if (grepl("^\\d+", val)) {
+          numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+        } else {
+          numeric_values[j] <- suppressWarnings(as.numeric(val))
+        }
+      }
+    }
+    
+    complete_data[[var1]] <- numeric_values
+    cat("    ✓", sum(!is.na(numeric_values)), "Werte konvertiert\n")
   }
+  
   if (var2_is_numeric && !is.numeric(complete_data[[var2]])) {
-    complete_data[[var2]] <- suppressWarnings(as.numeric(as.character(complete_data[[var2]])))
+    cat("  → Konvertiere", var2, "zu numerisch (ordinal/Likert)\n")
+    
+    # Verwende gleiche Logik wie create_numeric_versions()
+    char_values <- as.character(complete_data[[var2]])
+    numeric_values <- rep(NA_real_, length(char_values))
+    
+    for (j in seq_along(char_values)) {
+      val <- char_values[j]
+      if (!is.na(val) && val != "") {
+        if (grepl("^AO\\d+$", val)) {
+          numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+        } else if (grepl("^\\d+", val)) {
+          numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+        } else {
+          numeric_values[j] <- suppressWarnings(as.numeric(val))
+        }
+      }
+    }
+    
+    complete_data[[var2]] <- numeric_values
+    cat("    ✓", sum(!is.na(numeric_values)), "Werte konvertiert\n")
   }
   
   # Just-in-Time Factor-Konvertierung für kategoriale Analysen
@@ -8325,8 +8366,9 @@ export_results <- function(descriptive_results, crosstab_results, regression_res
   # Absoluter Pfad für URI
   absolute_path <- normalizePath(OUTPUT_FILE, winslash = "/", mustWork = FALSE)
   
-  # Erstelle file:// URI (funktioniert in RStudio und vielen Terminals)
+  # Erstelle file:// URI mit URL-Encoding für Leerzeichen
   file_uri <- paste0("file:///", gsub("\\\\", "/", absolute_path))
+  file_uri <- gsub(" ", "%20", file_uri)  # Leerzeichen → %20
   
   cat("\n📊 Excel-Datei:\n")
   cat("   Pfad: ", OUTPUT_FILE, "\n", sep = "")
@@ -9164,9 +9206,10 @@ export_open_text_responses_separate <- function(text_results) {
     cat("✓ Offene Textantworten exportiert!\n")
     cat("─────────────────────────────────────────────────────────────\n")
     
-    # Absoluter Pfad für URI
+    # Absoluter Pfad für URI mit URL-Encoding
     absolute_path <- normalizePath(text_output_file, winslash = "/", mustWork = FALSE)
     file_uri <- paste0("file:///", gsub("\\\\", "/", absolute_path))
+    file_uri <- gsub(" ", "%20", file_uri)  # Leerzeichen → %20
     
     cat("\n📝 Textantworten-Datei:\n")
     cat("   Pfad: ", text_output_file, "\n", sep = "")
