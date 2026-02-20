@@ -11,6 +11,22 @@
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.5.3 (20.02.2026) - KREUZTABELLEN & INTELLIGENTE TESTS
+#   • FIX: Kreuztabellen verwenden jetzt Zeilenprozente statt Spaltenprozente
+#   • ENHANCEMENT: Jede Zeile (Gruppe) summiert sich zu 100%
+#   • ENHANCEMENT: Ermöglicht Vergleich: "Welcher Anteil von Gruppe A hat Bewertung X?"
+#   • CONSISTENCY: Konsistente Prozentberechnung für Items und Gesamtzeile
+#   • INTERPRETATION: Zeilen = Gruppen, Spalten = Bewertungen/Kategorien
+#   • FEATURE: Intelligente Test-Auswahl mit automatischem Fallback
+#   • FEATURE: Zweistufiges Vorgehen: is_ordinal_or_likert → create_numeric_versions
+#   • FEATURE: Automatische Test-Anpassung wenn konfigurierter Test nicht passt
+#   • ENHANCEMENT: Excel-Export dokumentiert Test-Änderungen ("XX statt konfiguriert YY")
+#   • ENHANCEMENT: Neue Spalte "Hinweis" in Statistischen Tests zeigt Änderungsgrund
+#   • FIX: Gruppenmittelwerte konvertieren ordinale Variablen VOR Validierung
+#   • FIX: Verhindert verwirrende Fehlermeldung bei character-Variablen mit Range
+#   • FEATURE: Klickbare file:// URIs am Ende der Analyse für Excel-Dateien
+#   • ENHANCEMENT: Schönere Erfolgsausgabe mit Rahmen und Icons
+# 
 # v1.5.2 (21.01.2026) - REGRESSION ROBUSTHEIT & KONSISTENZ
 #   • FIX: Intelligente AV-Konvertierung basierend auf Config (ordinal vs nominal)
 #   • FEATURE: Neue Hilfsfunktion is_ordinal_or_likert() für Typ-Erkennung
@@ -5219,26 +5235,29 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
   # Zeilen- und Spaltennamen setzen
   rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
   
-  # Relative Häufigkeiten berechnen (Spaltenprozente)
+  # Relative Häufigkeiten berechnen (ZEILENPROZENTE)
+  # Jede Zeile summiert sich zu 100% → Vergleich: Welcher Anteil von Gruppe A hat Bewertung X?
   crosstab_rel <- crosstab_df
-  for (j in 1:(ncol(crosstab_rel)-1)) {  # Über Spalten iterieren, letzte Spalte ausschließen
-    total_col <- crosstab_rel[nrow(crosstab_rel), j]  # Spaltensumme aus der Gesamt-Zeile
-    if (total_col > 0) {
-      crosstab_rel[-nrow(crosstab_rel), j] <- round(
-        crosstab_rel[-nrow(crosstab_rel), j] / total_col * 100, DIGITS_ROUND
+  
+  # Zeilenprozente für alle Zeilen außer Gesamt-Zeile
+  for (i in 1:(nrow(crosstab_rel)-1)) {  # Über Zeilen iterieren, letzte Zeile ausschließen
+    total_row <- crosstab_rel[i, ncol(crosstab_rel)]  # Zeilensumme aus der Gesamt-Spalte
+    if (total_row > 0) {
+      crosstab_rel[i, -ncol(crosstab_rel)] <- round(
+        crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
       )
+      crosstab_rel[i, ncol(crosstab_rel)] <- 100  # Gesamt-Spalte = 100%
     }
   }
   
-  # Spaltenprozente für Gesamt-Zeile
-  total_col <- crosstab_rel$Gesamt[nrow(crosstab_rel)]
-  if (total_col > 0) {
+  # Zeilenprozente für Gesamt-Zeile (Spaltenprozente über alle Gruppen)
+  total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
+  if (total_row > 0) {
     crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
-      crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_col * 100, DIGITS_ROUND
+      crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
     )
+    crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100  # Gesamt = 100%
   }
-  crosstab_rel$Gesamt[1:(nrow(crosstab_rel)-1)] <- 100
-  crosstab_rel$Gesamt[nrow(crosstab_rel)] <- 100
   
   # *** NEUE LOGIK: Zusätzliche numerische Statistiken für dichotome Variablen ***
   numeric_table <- NULL
@@ -5488,98 +5507,102 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   
   cat("Erstelle Gruppenmittelwerte für", numeric_var, "gruppiert nach", group_var, "\n")
   
-  # NEUE VALIDIERUNG: Prüfe beide Variablen auf Varianz
-  # 1. Prüfe numerische Variable
-  valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
-  if (length(valid_numeric) == 0) {
-    cat("❌ FEHLER: Numerische Variable", numeric_var, "hat keine gültigen Werte\n")
-    return(NULL)
+  # SCHRITT 1: KONVERTIERUNG VOR VALIDIERUNG
+  # Prüfe ob Variable numerisch ist, wenn nicht: versuche Konvertierung
+  if (!is.numeric(data[[numeric_var]])) {
+    cat("  → Variable", numeric_var, "ist nicht numerisch (", class(data[[numeric_var]])[1], "), versuche Konvertierung\n")
+    
+    # Prüfe ob ordinale Konvertierung möglich ist
+    is_ordinal <- FALSE
+    if (!is.null(config)) {
+      is_ordinal <- is_ordinal_or_likert(numeric_var, config, data)
+    }
+    
+    if (is_ordinal) {
+      cat("    → Variable ist ordinal/Likert - konvertiere zu numerisch\n")
+      
+      # Verwende gleiche Logik wie create_numeric_versions()
+      char_values <- as.character(data[[numeric_var]])
+      numeric_values <- rep(NA_real_, length(char_values))
+      
+      for (j in seq_along(char_values)) {
+        val <- char_values[j]
+        if (!is.na(val) && val != "") {
+          if (grepl("^AO\\d+$", val)) {
+            numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+          } else if (grepl("^\\d+", val)) {
+            numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+          } else {
+            numeric_values[j] <- suppressWarnings(as.numeric(val))
+          }
+        }
+      }
+      
+      if (sum(!is.na(numeric_values)) > 0) {
+        data[[numeric_var]] <- numeric_values
+        cat("    ✓ Konvertierung erfolgreich:", sum(!is.na(numeric_values)), "Werte\n")
+      } else {
+        cat("    ❌ Konvertierung fehlgeschlagen - alle Werte NA\n")
+        return(NULL)
+      }
+    } else if (is.factor(data[[numeric_var]])) {
+      # Fallback für Faktoren
+      cat("    → Konvertiere Factor zu numerisch\n")
+      converted_values <- convert_factor_to_numeric_safe(data[[numeric_var]], numeric_var, config)
+      
+      if (!is.null(converted_values) && sum(!is.na(converted_values)) > 0) {
+        data[[numeric_var]] <- converted_values
+        cat("    ✓ Konvertierung erfolgreich:", sum(!is.na(converted_values)), "Werte\n")
+      } else {
+        cat("    ❌ Konvertierung fehlgeschlagen\n")
+        return(NULL)
+      }
+    } else {
+      # Direkte Konvertierung
+      cat("    → Versuche direkte Konvertierung\n")
+      data[[numeric_var]] <- suppressWarnings(as.numeric(as.character(data[[numeric_var]])))
+      
+      if (sum(!is.na(data[[numeric_var]])) == 0) {
+        cat("    ❌ Konvertierung fehlgeschlagen - alle Werte NA\n")
+        return(NULL)
+      }
+      cat("    ✓ Konvertierung erfolgreich:", sum(!is.na(data[[numeric_var]])), "Werte\n")
+    }
   }
   
-  # NEUER FIX: Konvertiere Factor zu numerisch falls nötig
-  if (is.factor(data[[numeric_var]])) {
-    cat("KONVERTIERE Factor", numeric_var, "zu numerisch für Gruppenmittelwerte\n")
-    cat("  Original Factor Levels:", paste(levels(data[[numeric_var]]), collapse = ", "), "\n")
-    cat("  Erste 5 Werte:", paste(head(as.character(data[[numeric_var]]), 5), collapse = ", "), "\n")
-    
-    # Verwende die spezialisierte Konvertierungsfunktion für AO-Pattern
-    converted_values <- convert_factor_to_numeric_safe(data[[numeric_var]], numeric_var, config)
-    
-    if (!is.null(converted_values) && !all(is.na(converted_values))) {
-      data[[numeric_var]] <- converted_values
-      cat("→ Konvertierung über convert_factor_to_numeric_safe erfolgreich\n")
-      cat("  Konvertierte Werte (erste 5):", paste(head(converted_values, 5), collapse = ", "), "\n")
-    } else {
-      cat("→ convert_factor_to_numeric_safe fehlgeschlagen, versuche Fallback\n")
-      # Fallback: Versuche einfache Konvertierung
-      factor_levels <- levels(data[[numeric_var]])
-      cat("Factor Levels:", paste(factor_levels, collapse = ", "), "\n")
-      
-      # Strategie 1: Levels sind bereits numerisch (z.B. "1", "2", "3")
-      if (all(grepl("^\\d+(\\.\\d+)?$", factor_levels))) {
-        data[[numeric_var]] <- as.numeric(as.character(data[[numeric_var]]))
-        cat("→ Konvertierung über numerische Levels erfolgreich\n")
-      } else {
-        # Strategie 2: Verwende Level-Position als numerische Werte
-        data[[numeric_var]] <- as.numeric(data[[numeric_var]])
-        cat("→ Konvertierung über Level-Position erfolgreich\n")
-      }
-    }
-    
-    # Neue Validierung nach Konvertierung
-    valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
-    if (length(valid_numeric) == 0) {
-      cat("❌ FEHLER: Konvertierung zu numerisch fehlgeschlagen\n")
-      cat("  Alle konvertierten Werte sind NA\n")
-      return(NULL)
-    } else {
-      cat("✅ Konvertierung erfolgreich:", length(valid_numeric), "gültige numerische Werte\n")
-    }
-  } else if (!is.numeric(data[[numeric_var]])) {
-    # Variable ist weder Factor noch numerisch → versuche direkte Konvertierung
-    cat("KONVERTIERE", class(data[[numeric_var]])[1], "Variable", numeric_var, "zu numerisch\n")
-    data[[numeric_var]] <- suppressWarnings(as.numeric(as.character(data[[numeric_var]])))
-    
-    valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
-    if (length(valid_numeric) == 0) {
-      cat("❌ FEHLER: Variable", numeric_var, "kann nicht zu numerisch konvertiert werden\n")
-      return(NULL)
-    }
+  # SCHRITT 2: VALIDIERUNG NACH KONVERTIERUNG
+  valid_numeric <- data[[numeric_var]][!is.na(data[[numeric_var]])]
+  if (length(valid_numeric) == 0) {
+    cat("  ❌ FEHLER: Numerische Variable", numeric_var, "hat keine gültigen Werte\n")
+    return(NULL)
   }
   
   if (length(unique(valid_numeric)) < 2) {
-    cat("❌ FEHLER: Numerische Variable", numeric_var, "hat keine Varianz (alle Werte gleich)\n")
+    cat("  ❌ FEHLER: Numerische Variable", numeric_var, "hat keine Varianz (alle Werte gleich)\n")
     return(NULL)
   }
   
-  # 2. Prüfe Gruppenvariable
+  # Prüfe Gruppenvariable
   valid_groups <- data[[group_var]][!is.na(data[[group_var]])]
   if (length(valid_groups) == 0) {
-    cat("❌ FEHLER: Gruppenvariable", group_var, "hat keine gültigen Werte\n")
+    cat("  ❌ FEHLER: Gruppenvariable", group_var, "hat keine gültigen Werte\n")
     return(NULL)
   }
   
   unique_groups <- unique(valid_groups)
   if (length(unique_groups) < 2) {
-    cat("❌ FEHLER: Gruppenvariable", group_var, "hat nur eine Gruppe:", unique_groups, "\n")
+    cat("  ❌ FEHLER: Gruppenvariable", group_var, "hat nur eine Gruppe:", unique_groups, "\n")
     return(NULL)
   }
   
-  # 3. Prüfe vollständige Fälle
+  # Prüfe vollständige Fälle
   complete_cases <- !is.na(data[[numeric_var]]) & !is.na(data[[group_var]])
   if (sum(complete_cases) < 5) {
-    cat("❌ FEHLER: Zu wenige vollständige Fälle (", sum(complete_cases), ") für Gruppenvergleich\n")
+    cat("  ❌ FEHLER: Zu wenige vollständige Fälle (", sum(complete_cases), ") für Gruppenvergleich\n")
     return(NULL)
   }
   
-  # 4. Prüfe ob jede Gruppe mindestens 2 Werte hat
-  group_counts <- table(data[[group_var]][complete_cases])
-  if (any(group_counts < 2)) {
-    small_groups <- names(group_counts)[group_counts < 2]
-    cat("WARNUNG: Folgende Gruppen haben weniger als 2 Werte:", paste(small_groups, collapse = ", "), "\n")
-  }
-  
-  cat("Validierung erfolgreich:", length(unique_groups), "Gruppen mit", sum(complete_cases), "vollständigen Fällen\n")
+  cat("  ✓ Validierung erfolgreich:", length(unique_groups), "Gruppen mit", sum(complete_cases), "vollständigen Fällen\n")
   
   # NEUER FIX: Survey-Objekt mit konvertierten Daten neu erstellen falls nötig
   if (!is.null(survey_obj) && WEIGHTS) {
@@ -6043,6 +6066,113 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
     ))
   }
   
+  # INTELLIGENTE TEST-AUSWAHL MIT FALLBACK
+  original_test_type <- test_type
+  test_changed <- FALSE
+  change_reason <- ""
+  
+  # Prüfe ob Variablen für gewählten Test geeignet sind
+  var1_is_numeric <- is.numeric(complete_data[[var1]])
+  var2_is_numeric <- is.numeric(complete_data[[var2]])
+  
+  # Prüfe ob ordinale Konvertierung möglich ist
+  var1_is_ordinal <- FALSE
+  var2_is_ordinal <- FALSE
+  
+  if (!is.null(config)) {
+    var1_is_ordinal <- is_ordinal_or_likert(var1, config, complete_data)
+    var2_is_ordinal <- is_ordinal_or_likert(var2, config, complete_data)
+  }
+  
+  # ZWEISTUFIGES VORGEHEN: Versuche ordinale Konvertierung
+  if (!var1_is_numeric && var1_is_ordinal) {
+    cat("  → Versuche ordinale Konvertierung für", var1, "\n")
+    
+    # Verwende gleiche Logik wie create_numeric_versions()
+    char_values <- as.character(complete_data[[var1]])
+    numeric_values <- rep(NA_real_, length(char_values))
+    
+    for (j in seq_along(char_values)) {
+      val <- char_values[j]
+      if (!is.na(val) && val != "") {
+        if (grepl("^AO\\d+$", val)) {
+          numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+        } else if (grepl("^\\d+", val)) {
+          numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+        } else {
+          numeric_values[j] <- suppressWarnings(as.numeric(val))
+        }
+      }
+    }
+    
+    if (sum(!is.na(numeric_values)) > 0) {
+      complete_data[[var1]] <- numeric_values
+      var1_is_numeric <- TRUE
+      cat("    ✓ Konvertierung erfolgreich:", sum(!is.na(numeric_values)), "Werte\n")
+    }
+  }
+  
+  if (!var2_is_numeric && var2_is_ordinal) {
+    cat("  → Versuche ordinale Konvertierung für", var2, "\n")
+    
+    char_values <- as.character(complete_data[[var2]])
+    numeric_values <- rep(NA_real_, length(char_values))
+    
+    for (j in seq_along(char_values)) {
+      val <- char_values[j]
+      if (!is.na(val) && val != "") {
+        if (grepl("^AO\\d+$", val)) {
+          numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+        } else if (grepl("^\\d+", val)) {
+          numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+        } else {
+          numeric_values[j] <- suppressWarnings(as.numeric(val))
+        }
+      }
+    }
+    
+    if (sum(!is.na(numeric_values)) > 0) {
+      complete_data[[var2]] <- numeric_values
+      var2_is_numeric <- TRUE
+      cat("    ✓ Konvertierung erfolgreich:", sum(!is.na(numeric_values)), "Werte\n")
+    }
+  }
+  
+  # INTELLIGENTE TEST-AUSWAHL basierend auf tatsächlichen Datentypen
+  if (test_type == "correlation" && (!var1_is_numeric || !var2_is_numeric)) {
+    test_type <- "chi_square"
+    test_changed <- TRUE
+    change_reason <- "Korrelation benötigt numerische Variablen"
+    cat("  ⚠ Test geändert:", original_test_type, "→", test_type, "(", change_reason, ")\n")
+    
+  } else if (test_type == "t_test" && (!var1_is_numeric || !var2_is_numeric)) {
+    # t-Test benötigt eine numerische und eine dichotome Variable
+    var1_unique <- length(unique(complete_data[[var1]]))
+    var2_unique <- length(unique(complete_data[[var2]]))
+    
+    if ((var1_is_numeric && var2_unique == 2) || (var2_is_numeric && var1_unique == 2)) {
+      # Passt für t-Test, aber Variablen müssen ggf. getauscht werden
+      # Das wird in perform_t_test_safe behandelt
+    } else {
+      # Fallback zu Chi-Quadrat oder ANOVA
+      if (var1_is_numeric || var2_is_numeric) {
+        test_type <- "anova"
+        change_reason <- "t-Test benötigt eine numerische und eine dichotome Variable"
+      } else {
+        test_type <- "chi_square"
+        change_reason <- "Keine numerischen Variablen für t-Test"
+      }
+      test_changed <- TRUE
+      cat("  ⚠ Test geändert:", original_test_type, "→", test_type, "(", change_reason, ")\n")
+    }
+    
+  } else if (test_type == "anova" && (!var1_is_numeric && !var2_is_numeric)) {
+    test_type <- "chi_square"
+    test_changed <- TRUE
+    change_reason <- "ANOVA benötigt mindestens eine numerische Variable"
+    cat("  ⚠ Test geändert:", original_test_type, "→", test_type, "(", change_reason, ")\n")
+  }
+  
   # NEUE VALIDIERUNG: Factor-Operationen vermeiden
   if (!is.null(survey_obj) && WEIGHTS) {
     # Prüfe ob Variablen für Survey-Operationen geeignet sind
@@ -6087,6 +6217,15 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
       statistic = NA
     )
   })
+  
+  # Füge Test-Änderungs-Info hinzu
+  if (test_changed) {
+    result$test_changed <- TRUE
+    result$original_test <- original_test_type
+    result$actual_test <- test_type
+    result$change_reason <- change_reason
+    result$test <- paste0(test_type, " (statt konfiguriert: ", original_test_type, ")")
+  }
   
   return(result)
 }
@@ -8176,7 +8315,26 @@ export_results <- function(descriptive_results, crosstab_results, regression_res
   
   # Excel-Datei speichern
   saveWorkbook(wb, OUTPUT_FILE, overwrite = TRUE)
-  cat("Ergebnisse erfolgreich exportiert nach:", OUTPUT_FILE, "\n")
+  
+  # Erfolgsausgabe mit klickbarer URI
+  cat("\n")
+  cat("═══════════════════════════════════════════════════════════════\n")
+  cat("✓ Ergebnisse erfolgreich exportiert!\n")
+  cat("═══════════════════════════════════════════════════════════════\n")
+  
+  # Absoluter Pfad für URI
+  absolute_path <- normalizePath(OUTPUT_FILE, winslash = "/", mustWork = FALSE)
+  
+  # Erstelle file:// URI (funktioniert in RStudio und vielen Terminals)
+  file_uri <- paste0("file:///", gsub("\\\\", "/", absolute_path))
+  
+  cat("\n📊 Excel-Datei:\n")
+  cat("   Pfad: ", OUTPUT_FILE, "\n", sep = "")
+  cat("   Link: ", file_uri, "\n", sep = "")
+  cat("\n")
+  cat("💡 Tipp: In RStudio können Sie Strg+Klick auf den Link verwenden\n")
+  cat("═══════════════════════════════════════════════════════════════\n")
+  cat("\n")
 }
 
 # Deskriptive Statistiken exportieren
@@ -8531,6 +8689,7 @@ export_statistical_tests <- function(wb, crosstab_results, header_style, table_s
     Statistik = character(),
     p_Wert = character(),
     Ergebnis = character(),
+    Hinweis = character(),
     stringsAsFactors = FALSE
   )
   
@@ -8545,27 +8704,42 @@ export_statistical_tests <- function(wb, crosstab_results, header_style, table_s
         # Für jeden Item-Test einen Eintrag hinzufügen
         for (item_name in names(test$item_tests)) {
           item_test <- test$item_tests[[item_name]]
+          
+          # Prüfe auf Test-Änderung
+          hinweis <- ""
+          if (!is.null(item_test$test_changed) && item_test$test_changed) {
+            hinweis <- paste0("Automatisch geändert von '", item_test$original_test, "' (", item_test$change_reason, ")")
+          }
+          
           test_summary <- rbind(test_summary, data.frame(
             Analyse = paste0(analysis_name, " [", item_name, "]"),
             Variable_1 = result$variable_1,
             Variable_2 = result$variable_2,
-            Test = item_test$test,
+            Test = if(!is.null(item_test$actual_test)) item_test$actual_test else item_test$test,
             Statistik = if(!is.na(item_test$statistic)) as.character(item_test$statistic) else "-",
             p_Wert = if(!is.na(item_test$p_value)) as.character(item_test$p_value) else "-",
             Ergebnis = item_test$result,
+            Hinweis = hinweis,
             stringsAsFactors = FALSE
           ))
         }
       } else {
         # Normaler Test
+        # Prüfe auf Test-Änderung
+        hinweis <- ""
+        if (!is.null(test$test_changed) && test$test_changed) {
+          hinweis <- paste0("Automatisch geändert von '", test$original_test, "' (", test$change_reason, ")")
+        }
+        
         test_summary <- rbind(test_summary, data.frame(
           Analyse = analysis_name,
           Variable_1 = result$variable_1,
           Variable_2 = result$variable_2,
-          Test = test$test,
+          Test = if(!is.null(test$actual_test)) test$actual_test else test$test,
           Statistik = if(!is.na(test$statistic)) as.character(test$statistic) else "-",
           p_Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-",
           Ergebnis = test$result,
+          Hinweis = hinweis,
           stringsAsFactors = FALSE
         ))
       }
@@ -8983,7 +9157,22 @@ export_open_text_responses_separate <- function(text_results) {
   # Workbook speichern
   tryCatch({
     saveWorkbook(wb, text_output_file, overwrite = TRUE)
-    cat("✓ Offene Textantworten exportiert nach:", text_output_file, "\n")
+    
+    # Erfolgsausgabe mit klickbarer URI
+    cat("\n")
+    cat("─────────────────────────────────────────────────────────────\n")
+    cat("✓ Offene Textantworten exportiert!\n")
+    cat("─────────────────────────────────────────────────────────────\n")
+    
+    # Absoluter Pfad für URI
+    absolute_path <- normalizePath(text_output_file, winslash = "/", mustWork = FALSE)
+    file_uri <- paste0("file:///", gsub("\\\\", "/", absolute_path))
+    
+    cat("\n📝 Textantworten-Datei:\n")
+    cat("   Pfad: ", text_output_file, "\n", sep = "")
+    cat("   Link: ", file_uri, "\n", sep = "")
+    cat("─────────────────────────────────────────────────────────────\n")
+    cat("\n")
   }, error = function(e) {
     cat("✗ Fehler beim Speichern der Textantworten-Datei:", e$message, "\n")
   })
