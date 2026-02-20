@@ -11,6 +11,26 @@
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.5.2 (21.01.2026) - REGRESSION ROBUSTHEIT & KONSISTENZ
+#   • FIX: Intelligente AV-Konvertierung basierend auf Config (ordinal vs nominal)
+#   • FEATURE: Neue Hilfsfunktion is_ordinal_or_likert() für Typ-Erkennung
+#   • CONSISTENCY: Verwendet gleiche Konvertierungslogik wie create_numeric_versions()
+#   • CONSISTENCY: 3-stufige Strategie (AO-Pattern → Zahl am Anfang → direkt)
+#   • ENHANCEMENT: Prüft Config auf data_type, min/max Range, ordinale Coding-Pattern
+#   • ENHANCEMENT: Warnt bei nicht-ordinalen kategorialen AV (falsche Regression)
+#   • ENHANCEMENT: Survey-Objekt wird bei Konvertierung aktualisiert
+#   • FIX: Verhindert "NA/NaN/Inf in 'y'" Fehler bei character/factor AV
+#   • FIX: Doppelte perform_ordinal_regression Definition entfernt
+#   • ENHANCEMENT: Kategoriale UV werden korrekt als Faktoren behandelt (Referenzkategorie)
+# 
+# v1.5.1 (21.01.2026) - VERBESSERUNGEN & BUGFIXES
+#   • ENHANCEMENT: Chi-Quadrat Warnungen zeigen jetzt betroffene Variablen
+#   • ENHANCEMENT: Cramér's V Warnungen zeigen jetzt betroffene Variablen
+#   • ENHANCEMENT: Prüfung erwarteter Häufigkeiten < 5 mit Info-Ausgabe
+#   • FIX: Filter-Validierung erlaubt jetzt normale R-Syntax (%in%, c(), etc.)
+#   • FIX: Reduzierte False-Positive Warnungen bei sicheren Operatoren
+#   • ENHANCEMENT: Kontextuelle Fehlermeldungen für besseres Debugging
+# 
 # v1.5.0 (21.01.2026) - NEUE FEATURES
 #   • FEATURE: Separate Excel-Datei "Offene_Textantworten.xlsx" für Textantworten
 #   • FEATURE: Ein Sheet pro Textfrage mit Variablennamen als Sheet-Name
@@ -688,17 +708,31 @@ parse_filter_expression <- function(filter_string, data_columns = NULL) {
   }
   
   # Erlaubte Zeichen überprüfen (zusätzliche Sicherheit)
-  allowed_chars <- "[a-zA-Z0-9._><=!&|()\"'\\[\\]\\s\\-+]"
+  # Erweiterte Liste erlaubter Zeichen für R-Syntax
+  allowed_chars <- "[a-zA-Z0-9._><=!&|()\"'\\[\\]\\s\\-+,%]"
   illegal_chars <- gsub(allowed_chars, "", filter_string)
-  illegal_chars <- gsub(" ", "", illegal_chars)  # Leerzeichen ignorieren
-  illegal_chars <- gsub("==", "", illegal_chars)  # Doppelgleich entfernen
-  illegal_chars <- gsub("!=", "", illegal_chars)  # Ungleich entfernen
-  illegal_chars <- gsub("<=", "", illegal_chars)  # <= entfernen
-  illegal_chars <- gsub(">=", "", illegal_chars)  # >= entfernen
   
+  # Entferne bekannte sichere Operatoren und Funktionen
+  illegal_chars <- gsub(" ", "", illegal_chars)       # Leerzeichen
+  illegal_chars <- gsub("==", "", illegal_chars)      # ==
+  illegal_chars <- gsub("!=", "", illegal_chars)      # !=
+  illegal_chars <- gsub("<=", "", illegal_chars)      # <=
+  illegal_chars <- gsub(">=", "", illegal_chars)      # >=
+  illegal_chars <- gsub("%in%", "", illegal_chars)    # %in%
+  illegal_chars <- gsub("\\(", "", illegal_chars)     # (
+  illegal_chars <- gsub("\\)", "", illegal_chars)     # )
+  illegal_chars <- gsub("'", "", illegal_chars)       # '
+  illegal_chars <- gsub("\"", "", illegal_chars)      # "
+  illegal_chars <- gsub(",", "", illegal_chars)       # ,
+  
+  # Nur warnen wenn wirklich verdächtige Zeichen übrig sind
   if (nchar(illegal_chars) > 0) {
-    warning("Potentiell unsichere Zeichen im Filter '", filter_string, "': '", 
-            paste(unique(strsplit(illegal_chars, "")[[1]]), collapse = "', '"), "'")
+    # Prüfe ob es wirklich gefährliche Zeichen sind
+    dangerous_chars <- grepl("[;$`\\\\]", illegal_chars)
+    if (dangerous_chars) {
+      warning("Potentiell unsichere Zeichen im Filter '", filter_string, "': '", 
+              paste(unique(strsplit(illegal_chars, "")[[1]]), collapse = "', '"), "'")
+    }
   }
   
   return(parsed_expr)
@@ -6073,7 +6107,26 @@ perform_chi_square_test <- function(data, var1, var2, survey_obj = NULL) {
   } else {
     # Standard Chi-Quadrat Test
     contingency_table <- table(data[[var1]], data[[var2]])
-    test_result <- chisq.test(contingency_table)
+    
+    # Test mit Warnung-Kontext
+    test_result <- tryCatch({
+      suppressWarnings({
+        result <- chisq.test(contingency_table)
+        
+        # Prüfe ob Warnung auftreten würde (erwartete Häufigkeiten < 5)
+        expected <- result$expected
+        if (any(expected < 5)) {
+          cat("  ℹ Chi-Quadrat-Test für", var1, "×", var2, 
+              ": Erwartete Häufigkeiten < 5 (", sum(expected < 5), "Zellen)\n")
+          cat("    → Ergebnis könnte unzuverlässig sein, erwäge Fisher's Exact Test\n")
+        }
+        
+        result
+      })
+    }, warning = function(w) {
+      cat("  ⚠ Chi-Quadrat-Test für", var1, "×", var2, ":", w$message, "\n")
+      chisq.test(contingency_table)
+    })
     
     return(list(
       test = "Chi-Quadrat",
@@ -6405,7 +6458,26 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
     } else {
       # Ungewichtetes Cramér's V
       contingency_table <- table(data[[var1]], data[[var2]])
-      chi2_result <- chisq.test(contingency_table)
+      
+      # Test mit Warnung-Kontext
+      chi2_result <- tryCatch({
+        suppressWarnings({
+          result <- chisq.test(contingency_table)
+          
+          # Prüfe ob Warnung auftreten würde
+          expected <- result$expected
+          if (any(expected < 5)) {
+            cat("  ℹ Cramér's V für", var1, "×", var2, 
+                ": Erwartete Häufigkeiten < 5 (", sum(expected < 5), "Zellen)\n")
+          }
+          
+          result
+        })
+      }, warning = function(w) {
+        cat("  ⚠ Cramér's V für", var1, "×", var2, ":", w$message, "\n")
+        chisq.test(contingency_table)
+      })
+      
       chi2_stat <- chi2_result$statistic
       n <- sum(contingency_table)
     }
@@ -6644,6 +6716,70 @@ should_be_factor_for_regression <- function(data, var_name, config) {
   }
 }
 
+is_ordinal_or_likert <- function(var_name, config, data = NULL) {
+  "Prüft ob Variable ordinal/Likert ist (numerische Konvertierung erlaubt)"
+  
+  # 1. Prüfe Config
+  config_row <- config$variablen[config$variablen$variable_name == var_name, ]
+  if (nrow(config_row) > 0) {
+    var_type <- config_row$data_type[1]
+    
+    # Ordinal oder numerisch mit Range = Likert-Skala
+    if (var_type %in% c("ordinal", "numeric")) {
+      return(TRUE)
+    }
+    
+    # Prüfe ob Range definiert (min/max) = Likert
+    if (!is.na(config_row$min_value[1]) && !is.na(config_row$max_value[1])) {
+      return(TRUE)
+    }
+    
+    # Prüfe Coding auf ordinale Pattern
+    if (!is.na(config_row$coding[1]) && config_row$coding[1] != "") {
+      labels <- parse_coding(config_row$coding[1])
+      if (!is.null(labels) && length(labels) > 1) {
+        # Prüfe ob Codes numerisch sind (1, 2, 3 oder AO01, AO02, AO03)
+        codes <- names(labels)
+        numeric_codes <- suppressWarnings(as.numeric(codes))
+        
+        # Direkt numerische Codes = ordinal
+        if (!any(is.na(numeric_codes))) {
+          return(TRUE)
+        }
+        
+        # AO-Codes: Prüfe Labels auf ordinale Pattern
+        if (all(grepl("^AO\\d+$", codes))) {
+          label_values <- as.character(labels)
+          # Pattern: "1 (trifft zu)", "2 (trifft eher zu)", etc.
+          ordinal_pattern_count <- sum(grepl("^\\d+\\s*\\(.*\\)$", label_values))
+          if (ordinal_pattern_count >= 3) {
+            return(TRUE)
+          }
+        }
+      }
+    }
+    
+    return(FALSE)
+  }
+  
+  # 2. Fallback: Daten-basierte Erkennung
+  if (!is.null(data) && var_name %in% names(data)) {
+    # Bereits numerisch = ordinal möglich
+    if (is.numeric(data[[var_name]])) {
+      return(TRUE)
+    }
+    
+    # Prüfe auf AO-Pattern mit wenigen eindeutigen Werten
+    unique_vals <- unique(na.omit(data[[var_name]]))
+    if (length(unique_vals) <= 10 && all(grepl("^AO\\d+$", unique_vals))) {
+      # Könnte ordinal sein, aber ohne Labels unsicher
+      return(FALSE)  # Konservativ: behandle als nominal
+    }
+  }
+  
+  return(FALSE)
+}
+
 # Regression durchführen
 # =============================================================================
 # BUGFIX: perform_regression Funktion - processed_vars Definition verschieben
@@ -6810,9 +6946,9 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
   # 7. REGRESSION DURCHFÜHREN
   result <- tryCatch({
     switch(regression_type,
-           "linear" = perform_linear_regression(complete_data, formula_obj, survey_obj),
+           "linear" = perform_linear_regression(complete_data, formula_obj, survey_obj, config),
            "logistic" = perform_logistic_regression(complete_data, formula_obj, survey_obj),
-           "ordinal" = perform_ordinal_regression(complete_data, formula_obj, survey_obj),
+           "ordinal" = perform_ordinal_regression(complete_data, formula_obj, survey_obj, config),
            list(error = paste("Regressionstyp", regression_type, "nicht implementiert"))
     )
   }, error = function(e) {
@@ -6843,10 +6979,78 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
 }
 
 # Lineare Regression
-perform_linear_regression <- function(data, formula_obj, survey_obj = NULL) {
+perform_linear_regression <- function(data, formula_obj, survey_obj = NULL, config = NULL) {
+  
+  # ROBUSTE KONVERTIERUNG DER ABHÄNGIGEN VARIABLE
+  # Extrahiere AV-Name aus Formel
+  av_name <- all.vars(formula_obj)[1]
+  
+  # Prüfe ob AV numerisch ist, wenn nicht: intelligente Konvertierung
+  if (!is.numeric(data[[av_name]])) {
+    cat("  ⚠ AV", av_name, "ist nicht numerisch (", class(data[[av_name]])[1], ")\n")
+    
+    # Prüfe ob Variable ordinal/Likert ist (aus Config)
+    is_ordinal <- FALSE
+    if (!is.null(config)) {
+      is_ordinal <- is_ordinal_or_likert(av_name, config, data)
+    }
+    
+    if (is_ordinal) {
+      cat("    → Variable ist ordinal/Likert - konvertiere zu numerisch\n")
+      
+      # VERWENDE GLEICHE LOGIK WIE create_numeric_versions()
+      char_values <- as.character(data[[av_name]])
+      numeric_values <- rep(NA_real_, length(char_values))
+      
+      for (j in seq_along(char_values)) {
+        val <- char_values[j]
+        if (!is.na(val) && val != "") {
+          # Strategie 1: AO-Pattern (AO01 -> 1, AO02 -> 2)
+          if (grepl("^AO\\d+$", val)) {
+            numeric_values[j] <- as.numeric(gsub("^AO0*", "", val))
+          }
+          # Strategie 2: Zahl am Anfang ("5 (sehr gut)" -> 5)
+          else if (grepl("^\\d+", val)) {
+            numeric_values[j] <- as.numeric(str_extract(val, "^\\d+"))
+          }
+          # Strategie 3: Direkte Konvertierung
+          else {
+            numeric_values[j] <- suppressWarnings(as.numeric(val))
+          }
+        }
+      }
+      
+      data[[av_name]] <- numeric_values
+      
+      # Prüfe Erfolg
+      n_converted <- sum(!is.na(numeric_values))
+      n_na <- sum(is.na(numeric_values))
+      cat("    ✓ Konvertiert:", n_converted, "Werte | NA:", n_na, "\n")
+      
+      if (n_converted > 0) {
+        cat("    ✓ Wertebereich:", 
+            min(data[[av_name]], na.rm = TRUE), "-", 
+            max(data[[av_name]], na.rm = TRUE), "\n")
+      }
+      
+    } else {
+      # Nicht-ordinale kategoriale Variable als AV
+      cat("    ⚠ WARNUNG: Variable ist nicht ordinal/Likert!\n")
+      cat("    → Für kategoriale AV sollte logistische/multinomiale Regression verwendet werden\n")
+      cat("    → Konvertiere trotzdem zu Factor-Levels für Regression\n")
+      
+      data[[av_name]] <- as.numeric(as.factor(data[[av_name]]))
+      cat("    ✓ Konvertiert zu Factor-Levels:", 
+          min(data[[av_name]], na.rm = TRUE), "-", 
+          max(data[[av_name]], na.rm = TRUE), "\n")
+    }
+  }
   
   if (!is.null(survey_obj) && WEIGHTS) {
     # Gewichtete lineare Regression
+    # WICHTIG: Survey-Objekt muss auch aktualisiert werden
+    survey_obj$variables[[av_name]] <- data[[av_name]]
+    
     survey_complete <- subset(survey_obj, complete.cases(survey_obj$variables[, all.vars(formula_obj)]))
     model <- svyglm(formula_obj, survey_complete, family = gaussian())
     
@@ -7003,30 +7207,15 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
   ))
 }
 
-# Ordinale Regression (korrigiert)
-perform_ordinal_regression <- function(data, formula_obj, survey_obj = NULL) {
-  # Für ordinale Regression würde man normalerweise MASS::polr verwenden
-  # Da das package nicht immer verfügbar ist, verwenden wir hier eine vereinfachte lineare Regression
-  cat("HINWEIS: Ordinale Regression als lineare Regression durchgeführt.\n")
-  
-  # Verwende die korrigierte lineare Regression
-  linear_result <- perform_linear_regression(data, formula_obj, survey_obj)
-  
-  # Ändere nur den Typ
-  linear_result$type <- "ordinal (als linear)"
-  
-  return(linear_result)
-}
-
 
 # Ordinale Regression (vereinfacht)
-perform_ordinal_regression <- function(data, formula_obj, survey_obj = NULL) {
+perform_ordinal_regression <- function(data, formula_obj, survey_obj = NULL, config = NULL) {
   # Für ordinale Regression würde man normalerweise MASS::polr verwenden
   # Da das package nicht immer verfügbar ist, verwenden wir hier eine vereinfachte lineare Regression
   cat("HINWEIS: Ordinale Regression als lineare Regression durchgeführt.\n")
   
-  # Verwende die korrigierte lineare Regression
-  linear_result <- perform_linear_regression(data, formula_obj, survey_obj)
+  # Verwende die korrigierte lineare Regression (mit config)
+  linear_result <- perform_linear_regression(data, formula_obj, survey_obj, config)
   
   # Ändere nur den Typ
   linear_result$type <- "ordinal (als linear)"
