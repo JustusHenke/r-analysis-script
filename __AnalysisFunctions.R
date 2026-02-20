@@ -11,6 +11,20 @@
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.5.4 (20.02.2026) - ROBUSTE ORDINAL/LIKERT ERKENNUNG
+#   • REFACTOR: Zentrale is_ordinal_or_likert() Funktion für alle Analysen
+#   • FEATURE: Mehrkriterien-Prüfung für ordinale Variablen:
+#     - Begrenzte Anzahl Ausprägungen (2-10)
+#     - Sequenzielle Codes (1, 2, 3 oder AO01, AO02, AO03)
+#     - Sprachliche Likert-Marker (nie/selten/oft, gar nicht/sehr, etc.)
+#     - Pattern-Erkennung ("1 (Beschreibung)", "2 (Beschreibung)")
+#     - Sequenzielle Zahlen in Labels
+#   • FEATURE: Erweiterbare Likert-Marker im Analysis-Cockpit (LIKERT_MARKERS_CUSTOM)
+#   • ENHANCEMENT: Konservativere Erkennung verhindert falsche Klassifikation
+#   • CONSISTENCY: Gleiche Logik in Deskriptiv, Kreuztabellen, Tests, Regressionen
+#   • FIX: Intelligente Konvertierung in create_contingency_table (AO-Codes)
+#   • FIX: URL-Encoding für Leerzeichen in file:// URIs (%20)
+# 
 # v1.5.3 (20.02.2026) - KREUZTABELLEN & INTELLIGENTE TESTS
 #   • FIX: Kreuztabellen verwenden jetzt Zeilenprozente statt Spaltenprozente
 #   • ENHANCEMENT: Jede Zeile (Gruppe) summiert sich zu 100%
@@ -5207,7 +5221,7 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     # var1 numerisch, var2 gruppierend (mit Labels)
     cat("→ Erstelle Gruppenmittelwerte:", var1, "gruppiert nach", var2, "(mit Labels)\n")
     
-    # Versuche Gruppenmittelwerte zu erstellen, falle zurück auf kategoriale Kreuztabelle bei Fehlern
+    # Versuche Gruppenmittelwerte zu erstellen
     group_means_result <- tryCatch({
       create_group_means_table(complete_data, var1, var2_display, survey_obj, config)
     }, error = function(e) {
@@ -5217,6 +5231,50 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     })
     
     if (!is.null(group_means_result)) {
+      # FÜR ORDINALE VARIABLEN: Füge auch kategoriale Kreuztabelle hinzu
+      if (var1_actual_type == "ordinal") {
+        cat("→ Variable ist ordinal - erstelle zusätzlich kategoriale Kreuztabelle\n")
+        
+        # Erstelle kategoriale Kreuztabelle (ohne numerische Konvertierung)
+        # Verwende die Display-Variablen (mit Labels)
+        if (!is.null(survey_obj) && WEIGHTS) {
+          survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
+          crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
+        } else {
+          crosstab <- table(complete_data[[var1_display]], complete_data[[var2_display]])
+        }
+        
+        # In Data Frame konvertieren mit Randverteilungen
+        crosstab_df <- as.data.frame.matrix(crosstab)
+        crosstab_df$Gesamt <- rowSums(crosstab_df)
+        crosstab_df <- rbind(crosstab_df, 
+                             c(colSums(crosstab_df[, -ncol(crosstab_df)]), sum(crosstab_df$Gesamt)))
+        rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
+        
+        # Zeilenprozente
+        crosstab_rel <- crosstab_df
+        for (i in 1:(nrow(crosstab_rel)-1)) {
+          total_row <- crosstab_rel[i, ncol(crosstab_rel)]
+          if (total_row > 0) {
+            crosstab_rel[i, -ncol(crosstab_rel)] <- round(
+              crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+            )
+            crosstab_rel[i, ncol(crosstab_rel)] <- 100
+          }
+        }
+        total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
+        if (total_row > 0) {
+          crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
+            crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+          )
+          crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100
+        }
+        
+        # Füge kategoriale Tabellen zum Ergebnis hinzu
+        group_means_result$categorical_absolute <- crosstab_df
+        group_means_result$categorical_relative <- crosstab_rel
+      }
+      
       return(group_means_result)
     }
     # Fallback: Behandle beide als kategorial
@@ -5225,7 +5283,7 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
     # var2 numerisch, var1 gruppierend (mit Labels)
     cat("→ Erstelle Gruppenmittelwerte:", var2, "gruppiert nach", var1, "(mit Labels)\n")
     
-    # Versuche Gruppenmittelwerte zu erstellen, falle zurück auf kategoriale Kreuztabelle bei Fehlern
+    # Versuche Gruppenmittelwerte zu erstellen
     group_means_result <- tryCatch({
       create_group_means_table(complete_data, var2, var1_display, survey_obj, config)
     }, error = function(e) {
@@ -5234,6 +5292,52 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
       NULL
     })
     
+    if (!is.null(group_means_result)) {
+      # FÜR ORDINALE VARIABLEN: Füge auch kategoriale Kreuztabelle hinzu
+      if (var2_actual_type == "ordinal") {
+        cat("→ Variable ist ordinal - erstelle zusätzlich kategoriale Kreuztabelle\n")
+        
+        # Erstelle kategoriale Kreuztabelle
+        if (!is.null(survey_obj) && WEIGHTS) {
+          survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
+          crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
+        } else {
+          crosstab <- table(complete_data[[var1_display]], complete_data[[var2_display]])
+        }
+        
+        # In Data Frame konvertieren mit Randverteilungen
+        crosstab_df <- as.data.frame.matrix(crosstab)
+        crosstab_df$Gesamt <- rowSums(crosstab_df)
+        crosstab_df <- rbind(crosstab_df, 
+                             c(colSums(crosstab_df[, -ncol(crosstab_df)]), sum(crosstab_df$Gesamt)))
+        rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
+        
+        # Zeilenprozente
+        crosstab_rel <- crosstab_df
+        for (i in 1:(nrow(crosstab_rel)-1)) {
+          total_row <- crosstab_rel[i, ncol(crosstab_rel)]
+          if (total_row > 0) {
+            crosstab_rel[i, -ncol(crosstab_rel)] <- round(
+              crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+            )
+            crosstab_rel[i, ncol(crosstab_rel)] <- 100
+          }
+        }
+        total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
+        if (total_row > 0) {
+          crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
+            crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+          )
+          crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100
+        }
+        
+        # Füge kategoriale Tabellen zum Ergebnis hinzu
+        group_means_result$categorical_absolute <- crosstab_df
+        group_means_result$categorical_relative <- crosstab_rel
+      }
+      
+      return(group_means_result)
+    }
     if (!is.null(group_means_result)) {
       return(group_means_result)
     }
@@ -6897,67 +7001,145 @@ should_be_factor_for_regression <- function(data, var_name, config) {
 }
 
 is_ordinal_or_likert <- function(var_name, config, data = NULL) {
-  "Prüft ob Variable ordinal/Likert ist (numerische Konvertierung erlaubt)"
+  "ZENTRALE FUNKTION: Prüft ob Variable ordinal/Likert ist (numerische Konvertierung erlaubt)"
   
-  # 1. Prüfe Config
+  # LIKERT-MARKER (Standard + Custom aus Config-Script)
+  likert_markers <- c(
+    # Zustimmung
+    "stimme.*zu", "zustimmung", "agree", "disagree",
+    "trifft.*zu", "trifft.*nicht.*zu",
+    # Häufigkeit
+    "nie", "selten", "manchmal", "oft", "immer", "häufig",
+    "never", "rarely", "sometimes", "often", "always",
+    # Intensität
+    "gar nicht", "kaum", "etwas", "ziemlich", "sehr", "äußerst",
+    "überhaupt nicht", "wenig", "mittel", "stark",
+    "not at all", "slightly", "moderately", "very", "extremely",
+    # Qualität
+    "schlecht", "mangelhaft", "befriedigend", "gut", "sehr gut", "ausgezeichnet",
+    "poor", "fair", "good", "very good", "excellent",
+    # Teils-teils
+    "teils.*teils", "weder.*noch", "neutral",
+    # Skalen-Enden
+    "voll und ganz", "vollständig", "completely", "fully"
+  )
+  
+  # Füge custom Marker hinzu (falls definiert)
+  if (exists("LIKERT_MARKERS_CUSTOM")) {
+    likert_markers <- c(likert_markers, LIKERT_MARKERS_CUSTOM)
+  }
+  
+  # 1. PRÜFE CONFIG
   config_row <- config$variablen[config$variablen$variable_name == var_name, ]
   if (nrow(config_row) > 0) {
     var_type <- config_row$data_type[1]
     
-    # Ordinal oder numerisch mit Range = Likert-Skala
+    # Explizit als ordinal oder numeric markiert
     if (var_type %in% c("ordinal", "numeric")) {
       return(TRUE)
     }
     
-    # Prüfe ob Range definiert (min/max) = Likert
+    # Range definiert (min/max) = Likert-Skala
+    # ABER: Prüfe auch ob Labels ordinal sind (nicht nur Range)
     if (!is.na(config_row$min_value[1]) && !is.na(config_row$max_value[1])) {
-      return(TRUE)
+      # Range allein reicht nicht - prüfe auch Labels
+      if (!is.na(config_row$coding[1]) && config_row$coding[1] != "") {
+        labels <- parse_coding(config_row$coding[1])
+        if (!is.null(labels) && length(labels) > 1) {
+          label_values <- tolower(as.character(labels))
+          
+          # Prüfe auf Likert-Marker in Labels
+          has_likert_markers <- any(sapply(likert_markers, function(marker) {
+            any(grepl(marker, label_values, ignore.case = TRUE))
+          }))
+          
+          if (has_likert_markers) {
+            return(TRUE)  # Range + Likert-Marker = ordinal
+          }
+          
+          # Prüfe auf ordinale Pattern in Labels
+          ordinal_pattern_count <- sum(grepl("^\\d+\\s*\\(.*\\)$", label_values))
+          if (ordinal_pattern_count >= length(labels) * 0.7) {
+            return(TRUE)  # Range + Pattern = ordinal
+          }
+        }
+      }
+      # Range ohne ordinale Labels = nicht automatisch ordinal
+      # Falle durch zu weiteren Prüfungen
     }
     
     # Prüfe Coding auf ordinale Pattern
     if (!is.na(config_row$coding[1]) && config_row$coding[1] != "") {
       labels <- parse_coding(config_row$coding[1])
       if (!is.null(labels) && length(labels) > 1) {
-        # Prüfe ob Codes numerisch sind (1, 2, 3 oder AO01, AO02, AO03)
+        
+        # KRITERIUM 1: Begrenzte Anzahl Ausprägungen (2-10)
+        n_categories <- length(labels)
+        if (n_categories < 2 || n_categories > 10) {
+          return(FALSE)  # Zu wenige oder zu viele Kategorien
+        }
+        
+        # KRITERIUM 2: Codes sind numerisch oder sequenziell
         codes <- names(labels)
         numeric_codes <- suppressWarnings(as.numeric(codes))
         
-        # Direkt numerische Codes = ordinal
+        # Direkt numerische Codes (1, 2, 3, ...)
         if (!any(is.na(numeric_codes))) {
-          return(TRUE)
+          # Prüfe ob sequenziell
+          if (all(diff(sort(numeric_codes)) == 1)) {
+            return(TRUE)  # Sequenzielle Codes = ordinal
+          }
         }
         
         # AO-Codes: Prüfe Labels auf ordinale Pattern
         if (all(grepl("^AO\\d+$", codes))) {
-          label_values <- as.character(labels)
-          # Pattern: "1 (trifft zu)", "2 (trifft eher zu)", etc.
+          label_values <- tolower(as.character(labels))
+          
+          # KRITERIUM 3: Sprachliche Likert-Marker in Labels
+          has_likert_markers <- any(sapply(likert_markers, function(marker) {
+            any(grepl(marker, label_values, ignore.case = TRUE))
+          }))
+          
+          if (has_likert_markers) {
+            return(TRUE)  # Likert-Marker gefunden
+          }
+          
+          # KRITERIUM 4: Pattern "1 (Beschreibung)", "2 (Beschreibung)"
           ordinal_pattern_count <- sum(grepl("^\\d+\\s*\\(.*\\)$", label_values))
-          if (ordinal_pattern_count >= 3) {
+          if (ordinal_pattern_count >= n_categories * 0.7) {  # Mindestens 70% haben Pattern
             return(TRUE)
+          }
+          
+          # KRITERIUM 5: Sequenzielle Zahlen in Labels (1, 2, 3, 4, 5)
+          numbers_in_labels <- suppressWarnings(as.numeric(gsub("\\D", "", label_values)))
+          if (!all(is.na(numbers_in_labels))) {
+            unique_numbers <- unique(numbers_in_labels[!is.na(numbers_in_labels)])
+            if (length(unique_numbers) >= 3 && all(diff(sort(unique_numbers)) == 1)) {
+              return(TRUE)  # Sequenzielle Zahlen in Labels
+            }
           }
         }
       }
     }
     
-    return(FALSE)
+    return(FALSE)  # Keine ordinalen Kriterien erfüllt
   }
   
-  # 2. Fallback: Daten-basierte Erkennung
+  # 2. FALLBACK: Daten-basierte Erkennung (konservativ)
   if (!is.null(data) && var_name %in% names(data)) {
-    # Bereits numerisch = ordinal möglich
+    # Bereits numerisch mit begrenzten Werten
     if (is.numeric(data[[var_name]])) {
-      return(TRUE)
-    }
-    
-    # Prüfe auf AO-Pattern mit wenigen eindeutigen Werten
-    unique_vals <- unique(na.omit(data[[var_name]]))
-    if (length(unique_vals) <= 10 && all(grepl("^AO\\d+$", unique_vals))) {
-      # Könnte ordinal sein, aber ohne Labels unsicher
-      return(FALSE)  # Konservativ: behandle als nominal
+      unique_vals <- unique(na.omit(data[[var_name]]))
+      if (length(unique_vals) >= 2 && length(unique_vals) <= 10) {
+        # Prüfe ob sequenziell
+        if (all(diff(sort(unique_vals)) == 1)) {
+          return(TRUE)  # Sequenzielle numerische Werte
+        }
+      }
     }
   }
   
-  return(FALSE)
+  return(FALSE)  # Konservativ: behandle als nominal
 }
 
 # Regression durchführen
@@ -8646,7 +8828,36 @@ export_crosstabs <- function(wb, crosstab_results, header_style, table_style, ti
         addStyle(wb, "Kreuztabellen", table_style, 
                  rows = (current_row + 1):(current_row + nrow(result$crosstab$group_means)), 
                  cols = 1:ncol(result$crosstab$group_means), gridExpand = TRUE)
-        current_row <- current_row + nrow(result$crosstab$group_means) + 3
+        current_row <- current_row + nrow(result$crosstab$group_means) + 2
+        
+        # FÜR ORDINALE VARIABLEN: Exportiere auch kategoriale Tabellen
+        if (!is.null(result$crosstab$categorical_absolute)) {
+          writeData(wb, "Kreuztabellen", "Absolute Häufigkeiten:", startRow = current_row)
+          current_row <- current_row + 1
+          absolute_table <- result$crosstab$categorical_absolute
+          absolute_table_with_rownames <- cbind(Variable = rownames(absolute_table), absolute_table)
+          writeData(wb, "Kreuztabellen", absolute_table_with_rownames, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Kreuztabellen", header_style, rows = current_row, cols = 1:(ncol(absolute_table) + 1))
+          addStyle(wb, "Kreuztabellen", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(absolute_table)), 
+                   cols = 1:(ncol(absolute_table) + 1), gridExpand = TRUE)
+          current_row <- current_row + nrow(absolute_table) + 2
+        }
+        
+        if (!is.null(result$crosstab$categorical_relative)) {
+          writeData(wb, "Kreuztabellen", "Relative Häufigkeiten (Zeilenprozente):", startRow = current_row)
+          current_row <- current_row + 1
+          relative_table <- result$crosstab$categorical_relative
+          relative_table_with_rownames <- cbind(Variable = rownames(relative_table), relative_table)
+          writeData(wb, "Kreuztabellen", relative_table_with_rownames, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Kreuztabellen", header_style, rows = current_row, cols = 1:(ncol(relative_table) + 1))
+          addStyle(wb, "Kreuztabellen", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(relative_table)), 
+                   cols = 1:(ncol(relative_table) + 1), gridExpand = TRUE)
+          current_row <- current_row + nrow(relative_table) + 3
+        } else {
+          current_row <- current_row + 1
+        }
       } else if ("type" %in% names(result$crosstab) && result$crosstab$type == "correlation") {
         # Korrelationsanalyse exportieren
         writeData(wb, "Kreuztabellen", "Korrelationsanalyse:", startRow = current_row)

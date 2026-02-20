@@ -39,6 +39,17 @@ INCLUDE_MISSING_DEFAULT <- FALSE
 EXPORT_OPEN_TEXT <- TRUE  # Separate Excel-Datei für offene Textantworten
 SAVE_CODEBOOK <- FALSE  # Codebook als Datei speichern (für Dokumentation)
 
+# Likert-Skalen Erkennung: Zusätzliche sprachliche Marker
+# Diese Marker werden verwendet, um ordinale/Likert-Skalen zu erkennen
+# Sie können hier projektspezifische Begriffe ergänzen
+LIKERT_MARKERS_CUSTOM <- c(
+  # Beispiele für projektspezifische Marker:
+  # "zufrieden", "unzufrieden",
+  # "wichtig", "unwichtig",
+  # "wahrscheinlich", "unwahrscheinlich"
+)
+# Hinweis: Standard-Marker (nie/selten/oft, gar nicht/sehr, etc.) sind bereits integriert
+
 
 # =============================================================================
 # Zusätzliche Variablen
