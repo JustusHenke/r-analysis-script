@@ -2,15 +2,24 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Version: 1.5.0
+# Version: 1.5.5
 # Datum: 21.01.2026
-# Letzte Änderung: Separate Excel-Datei für offene Textantworten
+# Letzte Änderung: Kategoriale Auszählungen für ordinale Variablen
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
 #               und Regressionsanalysen
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.5.5 (20.02.2026) - KATEGORIALE AUSZÄHLUNGEN FÜR ORDINALE VARIABLEN
+#   • FIX: Ordinale Variablen in Kreuztabellen zeigen IMMER kategoriale Auszählungen
+#   • FIX: Kategoriale Tabellen werden auch erstellt wenn Gruppenmittelwerte fehlschlagen
+#   • ENHANCEMENT: Beide Perspektiven für ordinale Variablen:
+#     - Gruppenmittelwerte (numerische Statistiken) wenn möglich
+#     - Absolute Häufigkeiten (kategoriale Auszählung)
+#     - Relative Häufigkeiten (Zeilenprozente)
+#   • FIX: Excel-Export zeigt beide Tabellen korrekt
+# 
 # v1.5.4 (20.02.2026) - ROBUSTE ORDINAL/LIKERT ERKENNUNG
 #   • REFACTOR: Zentrale is_ordinal_or_likert() Funktion für alle Analysen
 #   • FEATURE: Mehrkriterien-Prüfung für ordinale Variablen:
@@ -5230,51 +5239,62 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
       NULL
     })
     
-    if (!is.null(group_means_result)) {
-      # FÜR ORDINALE VARIABLEN: Füge auch kategoriale Kreuztabelle hinzu
-      if (var1_actual_type == "ordinal") {
-        cat("→ Variable ist ordinal - erstelle zusätzlich kategoriale Kreuztabelle\n")
-        
-        # Erstelle kategoriale Kreuztabelle (ohne numerische Konvertierung)
-        # Verwende die Display-Variablen (mit Labels)
-        if (!is.null(survey_obj) && WEIGHTS) {
-          survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
-          crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
-        } else {
-          crosstab <- table(complete_data[[var1_display]], complete_data[[var2_display]])
-        }
-        
-        # In Data Frame konvertieren mit Randverteilungen
-        crosstab_df <- as.data.frame.matrix(crosstab)
-        crosstab_df$Gesamt <- rowSums(crosstab_df)
-        crosstab_df <- rbind(crosstab_df, 
-                             c(colSums(crosstab_df[, -ncol(crosstab_df)]), sum(crosstab_df$Gesamt)))
-        rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
-        
-        # Zeilenprozente
-        crosstab_rel <- crosstab_df
-        for (i in 1:(nrow(crosstab_rel)-1)) {
-          total_row <- crosstab_rel[i, ncol(crosstab_rel)]
-          if (total_row > 0) {
-            crosstab_rel[i, -ncol(crosstab_rel)] <- round(
-              crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
-            )
-            crosstab_rel[i, ncol(crosstab_rel)] <- 100
-          }
-        }
-        total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
-        if (total_row > 0) {
-          crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
-            crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
-          )
-          crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100
-        }
-        
-        # Füge kategoriale Tabellen zum Ergebnis hinzu
-        group_means_result$categorical_absolute <- crosstab_df
-        group_means_result$categorical_relative <- crosstab_rel
+    # FÜR ORDINALE VARIABLEN: Erstelle IMMER kategoriale Kreuztabelle (auch wenn Gruppenmittelwerte fehlschlagen)
+    if (var1_actual_type == "ordinal") {
+      cat("→ Variable ist ordinal - erstelle kategoriale Kreuztabelle\n")
+      
+      # Erstelle kategoriale Kreuztabelle (ohne numerische Konvertierung)
+      # Verwende die Display-Variablen (mit Labels)
+      if (!is.null(survey_obj) && WEIGHTS) {
+        survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
+        crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
+      } else {
+        crosstab <- table(complete_data[[var1_display]], complete_data[[var2_display]])
       }
       
+      # In Data Frame konvertieren mit Randverteilungen
+      crosstab_df <- as.data.frame.matrix(crosstab)
+      crosstab_df$Gesamt <- rowSums(crosstab_df)
+      crosstab_df <- rbind(crosstab_df, 
+                           c(colSums(crosstab_df[, -ncol(crosstab_df)]), sum(crosstab_df$Gesamt)))
+      rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
+      
+      # Zeilenprozente
+      crosstab_rel <- crosstab_df
+      for (i in 1:(nrow(crosstab_rel)-1)) {
+        total_row <- crosstab_rel[i, ncol(crosstab_rel)]
+        if (total_row > 0) {
+          crosstab_rel[i, -ncol(crosstab_rel)] <- round(
+            crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+          )
+          crosstab_rel[i, ncol(crosstab_rel)] <- 100
+        }
+      }
+      total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
+      if (total_row > 0) {
+        crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
+          crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+        )
+        crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100
+      }
+      
+      # Füge kategoriale Tabellen zum Ergebnis hinzu (oder erstelle neues Ergebnis falls group_means NULL)
+      if (!is.null(group_means_result)) {
+        group_means_result$categorical_absolute <- crosstab_df
+        group_means_result$categorical_relative <- crosstab_rel
+      } else {
+        # Gruppenmittelwerte fehlgeschlagen, aber kategoriale Tabelle erstellen
+        group_means_result <- list(
+          type = "group_means",
+          group_means = NULL,  # Keine numerischen Kennwerte
+          categorical_absolute = crosstab_df,
+          categorical_relative = crosstab_rel,
+          n_total = nrow(complete_data)
+        )
+      }
+    }
+    
+    if (!is.null(group_means_result)) {
       return(group_means_result)
     }
     # Fallback: Behandle beide als kategorial
@@ -5292,52 +5312,60 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
       NULL
     })
     
-    if (!is.null(group_means_result)) {
-      # FÜR ORDINALE VARIABLEN: Füge auch kategoriale Kreuztabelle hinzu
-      if (var2_actual_type == "ordinal") {
-        cat("→ Variable ist ordinal - erstelle zusätzlich kategoriale Kreuztabelle\n")
-        
-        # Erstelle kategoriale Kreuztabelle
-        if (!is.null(survey_obj) && WEIGHTS) {
-          survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
-          crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
-        } else {
-          crosstab <- table(complete_data[[var1_display]], complete_data[[var2_display]])
-        }
-        
-        # In Data Frame konvertieren mit Randverteilungen
-        crosstab_df <- as.data.frame.matrix(crosstab)
-        crosstab_df$Gesamt <- rowSums(crosstab_df)
-        crosstab_df <- rbind(crosstab_df, 
-                             c(colSums(crosstab_df[, -ncol(crosstab_df)]), sum(crosstab_df$Gesamt)))
-        rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
-        
-        # Zeilenprozente
-        crosstab_rel <- crosstab_df
-        for (i in 1:(nrow(crosstab_rel)-1)) {
-          total_row <- crosstab_rel[i, ncol(crosstab_rel)]
-          if (total_row > 0) {
-            crosstab_rel[i, -ncol(crosstab_rel)] <- round(
-              crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
-            )
-            crosstab_rel[i, ncol(crosstab_rel)] <- 100
-          }
-        }
-        total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
-        if (total_row > 0) {
-          crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
-            crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
-          )
-          crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100
-        }
-        
-        # Füge kategoriale Tabellen zum Ergebnis hinzu
-        group_means_result$categorical_absolute <- crosstab_df
-        group_means_result$categorical_relative <- crosstab_rel
+    # FÜR ORDINALE VARIABLEN: Erstelle IMMER kategoriale Kreuztabelle (auch wenn Gruppenmittelwerte fehlschlagen)
+    if (var2_actual_type == "ordinal") {
+      cat("→ Variable ist ordinal - erstelle kategoriale Kreuztabelle\n")
+      
+      # Erstelle kategoriale Kreuztabelle
+      if (!is.null(survey_obj) && WEIGHTS) {
+        survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
+        crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
+      } else {
+        crosstab <- table(complete_data[[var1_display]], complete_data[[var2_display]])
       }
       
-      return(group_means_result)
+      # In Data Frame konvertieren mit Randverteilungen
+      crosstab_df <- as.data.frame.matrix(crosstab)
+      crosstab_df$Gesamt <- rowSums(crosstab_df)
+      crosstab_df <- rbind(crosstab_df, 
+                           c(colSums(crosstab_df[, -ncol(crosstab_df)]), sum(crosstab_df$Gesamt)))
+      rownames(crosstab_df)[nrow(crosstab_df)] <- "Gesamt"
+      
+      # Zeilenprozente
+      crosstab_rel <- crosstab_df
+      for (i in 1:(nrow(crosstab_rel)-1)) {
+        total_row <- crosstab_rel[i, ncol(crosstab_rel)]
+        if (total_row > 0) {
+          crosstab_rel[i, -ncol(crosstab_rel)] <- round(
+            crosstab_rel[i, -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+          )
+          crosstab_rel[i, ncol(crosstab_rel)] <- 100
+        }
+      }
+      total_row <- crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)]
+      if (total_row > 0) {
+        crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] <- round(
+          crosstab_rel[nrow(crosstab_rel), -ncol(crosstab_rel)] / total_row * 100, DIGITS_ROUND
+        )
+        crosstab_rel[nrow(crosstab_rel), ncol(crosstab_rel)] <- 100
+      }
+      
+      # Füge kategoriale Tabellen zum Ergebnis hinzu (oder erstelle neues Ergebnis falls group_means NULL)
+      if (!is.null(group_means_result)) {
+        group_means_result$categorical_absolute <- crosstab_df
+        group_means_result$categorical_relative <- crosstab_rel
+      } else {
+        # Gruppenmittelwerte fehlgeschlagen, aber kategoriale Tabelle erstellen
+        group_means_result <- list(
+          type = "group_means",
+          group_means = NULL,  # Keine numerischen Kennwerte
+          categorical_absolute = crosstab_df,
+          categorical_relative = crosstab_rel,
+          n_total = nrow(complete_data)
+        )
+      }
     }
+    
     if (!is.null(group_means_result)) {
       return(group_means_result)
     }
@@ -8820,15 +8848,17 @@ export_crosstabs <- function(wb, crosstab_results, header_style, table_style, ti
           current_row <- current_row + 2
         }
       } else if ("type" %in% names(result$crosstab) && result$crosstab$type == "group_means") {
-        # Gruppenmittelwerte exportieren
-        writeData(wb, "Kreuztabellen", "Gruppenmittelwerte:", startRow = current_row)
-        current_row <- current_row + 1
-        writeData(wb, "Kreuztabellen", result$crosstab$group_means, startRow = current_row, colNames = TRUE)
-        addStyle(wb, "Kreuztabellen", header_style, rows = current_row, cols = 1:ncol(result$crosstab$group_means))
-        addStyle(wb, "Kreuztabellen", table_style, 
-                 rows = (current_row + 1):(current_row + nrow(result$crosstab$group_means)), 
-                 cols = 1:ncol(result$crosstab$group_means), gridExpand = TRUE)
-        current_row <- current_row + nrow(result$crosstab$group_means) + 2
+        # Gruppenmittelwerte exportieren (falls vorhanden)
+        if (!is.null(result$crosstab$group_means)) {
+          writeData(wb, "Kreuztabellen", "Gruppenmittelwerte:", startRow = current_row)
+          current_row <- current_row + 1
+          writeData(wb, "Kreuztabellen", result$crosstab$group_means, startRow = current_row, colNames = TRUE)
+          addStyle(wb, "Kreuztabellen", header_style, rows = current_row, cols = 1:ncol(result$crosstab$group_means))
+          addStyle(wb, "Kreuztabellen", table_style, 
+                   rows = (current_row + 1):(current_row + nrow(result$crosstab$group_means)), 
+                   cols = 1:ncol(result$crosstab$group_means), gridExpand = TRUE)
+          current_row <- current_row + nrow(result$crosstab$group_means) + 2
+        }
         
         # FÜR ORDINALE VARIABLEN: Exportiere auch kategoriale Tabellen
         if (!is.null(result$crosstab$categorical_absolute)) {
