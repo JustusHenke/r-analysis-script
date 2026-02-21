@@ -3158,7 +3158,40 @@ convert_to_factor_with_labels <- function(data, var_name, preserve_labels = TRUE
   var_data <- data[[var_name]]
   
   if (is.factor(var_data)) {
-    return(data)  # Bereits Factor
+    # Bereits Factor - aber prüfe auf leere Strings und re-level
+    var_data <- droplevels(var_data)
+    
+    # Re-level: AO01 oder erste sinnvolle Kategorie als Referenz
+    current_levels <- levels(var_data)
+    if (length(current_levels) > 1) {
+      # Priorisiere AO01, dann andere AO-Codes, dann Rest
+      ao01_idx <- which(current_levels == "AO01")
+      ao_codes <- grep("^AO\\d+$", current_levels, value = TRUE)
+      other_levels <- setdiff(current_levels, c("-oth-", ao_codes))
+      
+      if (length(ao01_idx) > 0) {
+        # AO01 existiert - mache es zur Referenz
+        new_order <- c("AO01", setdiff(current_levels, "AO01"))
+      } else if (length(ao_codes) > 0) {
+        # Kein AO01, aber andere AO-Codes - nimm den ersten
+        new_order <- c(ao_codes[1], setdiff(current_levels, ao_codes[1]))
+      } else if (length(other_levels) > 0) {
+        # Keine AO-Codes - nimm erste nicht-oth Kategorie
+        new_order <- c(other_levels[1], setdiff(current_levels, other_levels[1]))
+      } else {
+        new_order <- current_levels
+      }
+      
+      var_data <- factor(var_data, levels = new_order)
+    }
+    
+    data[[var_name]] <- var_data
+    return(data)
+  }
+  
+  # WICHTIG: Leere Strings zu NA konvertieren BEVOR Factor-Konvertierung
+  if (is.character(var_data)) {
+    var_data[var_data == "" | var_data == " "] <- NA_character_
   }
   
   # Value Labels speichern
@@ -3171,6 +3204,33 @@ convert_to_factor_with_labels <- function(data, var_name, preserve_labels = TRUE
   
   # Zu Factor konvertieren
   data[[var_name]] <- as.factor(var_data)
+  
+  # Ungenutzte Levels entfernen (inkl. NA)
+  data[[var_name]] <- droplevels(data[[var_name]])
+  
+  # Re-level: AO01 oder erste sinnvolle Kategorie als Referenz
+  current_levels <- levels(data[[var_name]])
+  if (length(current_levels) > 1) {
+    # Priorisiere AO01, dann andere AO-Codes, dann Rest
+    ao01_idx <- which(current_levels == "AO01")
+    ao_codes <- grep("^AO\\d+$", current_levels, value = TRUE)
+    other_levels <- setdiff(current_levels, c("-oth-", ao_codes))
+    
+    if (length(ao01_idx) > 0) {
+      # AO01 existiert - mache es zur Referenz
+      new_order <- c("AO01", setdiff(current_levels, "AO01"))
+    } else if (length(ao_codes) > 0) {
+      # Kein AO01, aber andere AO-Codes - nimm den ersten
+      new_order <- c(ao_codes[1], setdiff(current_levels, ao_codes[1]))
+    } else if (length(other_levels) > 0) {
+      # Keine AO-Codes - nimm erste nicht-oth Kategorie
+      new_order <- c(other_levels[1], setdiff(current_levels, other_levels[1]))
+    } else {
+      new_order <- current_levels
+    }
+    
+    data[[var_name]] <- factor(data[[var_name]], levels = new_order)
+  }
   
   # Labels wieder anwenden falls vorhanden
   if (!is.null(original_labels) && length(original_labels) > 0) {
@@ -3191,7 +3251,7 @@ convert_to_factor_with_labels <- function(data, var_name, preserve_labels = TRUE
 }
 
 create_survey_object <- function(data, weight_var) {
-  "Erstellt Survey-Objekt mit character statt factor Variablen"
+  "Erstellt Survey-Objekt mit Daten"
   
   if (!weight_var %in% names(data)) {
     return(NULL)
@@ -3200,19 +3260,16 @@ create_survey_object <- function(data, weight_var) {
   # Konvertiere zu data.frame (nicht tibble) für Survey-Kompatibilität
   survey_data <- as.data.frame(data)
   
-  # ALLE FACTORS ZU CHARACTER konvertieren für Survey-Kompatibilität
-  factor_vars <- sapply(survey_data, is.factor)
-  if (any(factor_vars)) {
-    factor_var_names <- names(survey_data)[factor_vars]
-    cat("Konvertiere", length(factor_var_names), "Factor-Variablen zu Character für Survey-Objekt\n")
-    
-    for (var_name in factor_var_names) {
-      survey_data[[var_name]] <- as.character(survey_data[[var_name]])
-    }
-  }
+  # KEINE automatische Konvertierung von Factors zu Character mehr
+  # Survey-Paket kann mit Factors umgehen
   
   # Survey-Objekt erstellen
-  survey_obj <- svydesign(ids = ~1, weights = survey_data[[weight_var]], data = survey_data)
+  survey_obj <- tryCatch({
+    svydesign(ids = ~1, weights = survey_data[[weight_var]], data = survey_data)
+  }, error = function(e) {
+    cat("  ⚠ FEHLER beim svydesign():", e$message, "\n")
+    return(NULL)
+  })
   
   return(survey_obj)
 }
@@ -7255,12 +7312,20 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
         for (var in interaction_vars) {
           if (var %in% names(complete_data) && should_be_factor_for_regression(complete_data, var, config)) {
             complete_data <- convert_to_factor_with_labels(complete_data, var)
+            # NA explizit entfernen aus Factor-Levels
+            if (is.factor(complete_data[[var]])) {
+              complete_data[[var]] <- droplevels(complete_data[[var]])
+            }
           }
         }
       } else {
         # Normale Variable
         if (var_string %in% names(complete_data) && should_be_factor_for_regression(complete_data, var_string, config)) {
           complete_data <- convert_to_factor_with_labels(complete_data, var_string)
+          # NA explizit entfernen aus Factor-Levels
+          if (is.factor(complete_data[[var_string]])) {
+            complete_data[[var_string]] <- droplevels(complete_data[[var_string]])
+          }
         }
       }
     }
@@ -7284,6 +7349,33 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
     
     # NEUE VALIDIERUNG: Datentypen für Regression prüfen
     cat("Validiere Variablentypen für Regression:\n")
+    
+    # Liste für Variablen mit nur 1 Level
+    vars_to_exclude <- c()
+    
+    # PRÜFE ZUERST DIE ABHÄNGIGE VARIABLE (für logistische Regression)
+    if (dependent_var %in% names(complete_data)) {
+      av_class <- class(complete_data[[dependent_var]])[1]
+      cat("  ", dependent_var, "(AV):", av_class)
+      
+      if (av_class == "character") {
+        complete_data[[dependent_var]] <- as.factor(complete_data[[dependent_var]])
+        complete_data[[dependent_var]] <- droplevels(complete_data[[dependent_var]])
+        cat(" → konvertiert zu factor")
+      }
+      
+      if (is.factor(complete_data[[dependent_var]])) {
+        n_levels <- nlevels(complete_data[[dependent_var]])
+        cat(" | Levels:", n_levels)
+        if (n_levels < 2) {
+          cat("\nFEHLER: Abhängige Variable hat nur", n_levels, "Level\n")
+          return(NULL)
+        }
+      }
+      cat("\n")
+    }
+    
+    # PRÜFE UNABHÄNGIGE VARIABLEN
     for (var_string in processed_vars) {
       if (grepl("\\*", var_string)) {
         # Interaktionsterm: Prüfe beide Variablen
@@ -7298,7 +7390,18 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
             # Character zu Factor konvertieren (für kategoriale Variablen)
             if (var_class == "character") {
               complete_data[[var]] <- as.factor(complete_data[[var]])
+              complete_data[[var]] <- droplevels(complete_data[[var]])
               cat(" → konvertiert zu factor")
+            }
+            
+            # Prüfe Anzahl Levels für alle Factor-Variablen
+            if (is.factor(complete_data[[var]])) {
+              n_levels <- nlevels(complete_data[[var]])
+              cat(" | Levels:", n_levels)
+              if (n_levels < 2) {
+                cat(" ⚠ NUR 1 LEVEL - wird ausgeschlossen")
+                vars_to_exclude <- c(vars_to_exclude, var_string)
+              }
             }
             cat("\n")
           }
@@ -7312,11 +7415,39 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
           # Character zu Factor konvertieren (für kategoriale Variablen)
           if (var_class == "character") {
             complete_data[[var_string]] <- as.factor(complete_data[[var_string]])
+            complete_data[[var_string]] <- droplevels(complete_data[[var_string]])
             cat(" → konvertiert zu factor")
+          }
+          
+          # Prüfe Anzahl Levels für alle Factor-Variablen
+          if (is.factor(complete_data[[var_string]])) {
+            n_levels <- nlevels(complete_data[[var_string]])
+            cat(" | Levels:", n_levels)
+            if (n_levels < 2) {
+              cat(" ⚠ NUR 1 LEVEL - wird ausgeschlossen")
+              vars_to_exclude <- c(vars_to_exclude, var_string)
+            }
           }
           cat("\n")
         }
       }
+    }
+    
+    # Variablen mit nur 1 Level ausschließen
+    if (length(vars_to_exclude) > 0) {
+      cat("⚠ WARNUNG: Folgende Variablen haben nur 1 Level und werden aus dem Modell ausgeschlossen:\n")
+      cat("  ", paste(vars_to_exclude, collapse = ", "), "\n")
+      processed_vars <- processed_vars[!processed_vars %in% vars_to_exclude]
+      
+      if (length(processed_vars) == 0) {
+        cat("FEHLER: Keine Prädiktoren mehr übrig nach Ausschluss\n")
+        return(NULL)
+      }
+      
+      # Formel neu erstellen UND formula_obj aktualisieren
+      formula_str <- paste(dependent_var, "~", paste(processed_vars, collapse = " + "))
+      cat("Neue Formel:", formula_str, "\n")
+      formula_obj <- as.formula(formula_str)
     }
     
     # Test ob Formel mit Daten funktioniert
@@ -7359,7 +7490,7 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
   # Metadaten hinzufügen
   result$regression_name <- regression_name
   result$dependent_var <- dependent_var
-  result$independent_vars <- independent_vars
+  result$independent_vars <- processed_vars  # GEÄNDERT: Verwende gefilterte Liste
   result$regression_type <- regression_type
   result$n_complete <- nrow(complete_data)
   result$weighted <- !is.null(survey_obj) && WEIGHTS
@@ -7438,38 +7569,83 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL, conf
   
   if (!is.null(survey_obj) && WEIGHTS) {
     # Gewichtete lineare Regression
-    # WICHTIG: Survey-Objekt muss auch aktualisiert werden
-    survey_obj$variables[[av_name]] <- data[[av_name]]
-    
-    survey_complete <- subset(survey_obj, complete.cases(survey_obj$variables[, all.vars(formula_obj)]))
-    model <- svyglm(formula_obj, survey_complete, family = gaussian())
+    if (!WEIGHT_VAR %in% names(data)) {
+      cat("  ⚠ WARNUNG: Gewichtungsvariable", WEIGHT_VAR, "nicht in Daten gefunden\n")
+      cat("    → Führe ungewichtete Regression durch\n")
+      model <- lm(formula_obj, data = data)
+      n <- nrow(data)
+    } else {
+      cat("  Verwende gewichtete lineare Regression mit lm(weights=...)\n")
+      
+      # Prüfe Gewichte
+      weights_vec <- data[[WEIGHT_VAR]]
+      n_weights <- length(weights_vec)
+      n_data <- nrow(data)
+      n_valid_weights <- sum(!is.na(weights_vec))
+      
+      cat("    Gewichte: N =", n_data, "| Gültige Gewichte:", n_valid_weights, "\n")
+      
+      if (n_weights != n_data) {
+        cat("  ⚠ WARNUNG: Gewichtsvariable hat falsche Länge (", n_weights, "vs", n_data, ")\n")
+        cat("    → Führe ungewichtete Regression durch\n")
+        model <- lm(formula_obj, data = data)
+        n <- nrow(data)
+      } else if (n_valid_weights < n_data * 0.9) {
+        cat("  ⚠ WARNUNG: Zu viele fehlende Gewichte (", n_data - n_valid_weights, "von", n_data, ")\n")
+        cat("    → Führe ungewichtete Regression durch\n")
+        model <- lm(formula_obj, data = data)
+        n <- nrow(data)
+      } else {
+        # Verwende lm() mit weights
+        model <- tryCatch({
+          # Füge Gewichte als temporäre Spalte hinzu
+          data$.weights_temp <- as.numeric(data[[WEIGHT_VAR]])
+          cat("    Gewichte als Spalte hinzugefügt, Länge:", length(data$.weights_temp), "\n")
+          
+          # Führe gewichtete Regression durch
+          m <- lm(formula_obj, data = data, weights = .weights_temp)
+          
+          # Entferne temporäre Spalte
+          data$.weights_temp <- NULL
+          
+          cat("  ✓ Gewichtete Regression erfolgreich\n")
+          m
+        }, error = function(e) {
+          cat("  ⚠ FEHLER bei gewichteter lm():", e$message, "\n")
+          cat("    → Führe ungewichtete Regression durch\n")
+          # Cleanup
+          if (".weights_temp" %in% names(data)) {
+            data$.weights_temp <- NULL
+          }
+          return(lm(formula_obj, data = data))
+        })
+        
+        n <- nrow(data)
+      }
+    }
     
     # Modell-Zusammenfassung
     model_summary <- summary(model)
+    r_squared <- model_summary$r.squared
     
-    # R-squared approximation für gewichtete Regression
-    fitted_values <- fitted(model)
-    observed_values <- survey_complete$variables[, all.vars(formula_obj)[1]]
+    # F-Statistik korrekt extrahieren
+    f_stat <- model_summary$fstatistic
+    if (!is.null(f_stat) && length(f_stat) >= 3) {
+      f_value <- f_stat[1]
+      f_p_value <- pf(f_stat[1], f_stat[2], f_stat[3], lower.tail = FALSE)
+    } else {
+      f_value <- NA
+      f_p_value <- NA
+    }
     
-    # Bessere R² Berechnung für gewichtete Regression
-    ss_res <- sum((observed_values - fitted_values)^2)
-    ss_tot <- sum((observed_values - mean(observed_values))^2)
-    r_squared <- 1 - (ss_res / ss_tot)
-    
-    # Für gewichtete Regression: Pseudo-F-Test
-    n <- nrow(survey_complete$variables)
-    p <- length(all.vars(formula_obj)) - 1  # Anzahl Prädiktoren
-    f_stat <- (r_squared / p) / ((1 - r_squared) / (n - p - 1))
-    f_p_value <- pf(f_stat, p, n - p - 1, lower.tail = FALSE)
-    
-    # Modell-Güte für gewichtete Regression
+    # Modell-Güte
     model_fit <- data.frame(
       Kennwert = c("R²", "Adjustiertes R²", "F-Statistik", "p-Wert (Modell)", "N"),
       Wert = c(
         round(r_squared, DIGITS_ROUND),
-        round(1 - (1 - r_squared) * (n - 1) / (n - p - 1), DIGITS_ROUND),  # Adj. R²
-        round(f_stat, DIGITS_ROUND),
-        round(f_p_value, 4),
+        round(model_summary$adj.r.squared, DIGITS_ROUND),
+        if(!is.na(f_value)) round(f_value, DIGITS_ROUND) else "NA",
+        if(!is.na(f_p_value)) round(f_p_value, 4) else "NA",
         n
       ),
       stringsAsFactors = FALSE
@@ -7505,19 +7681,82 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL, conf
     )
   }
   
-  # Koeffizienten-Tabelle erstellen (unverändert)
-  coef_table <- data.frame(
-    Variable = rownames(model_summary$coefficients),
-    Koeffizient = sapply(model_summary$coefficients[, "Estimate"], smart_round_coefficient),
-    Std_Fehler = round(model_summary$coefficients[, "Std. Error"], DIGITS_ROUND),
-    t_Wert = round(model_summary$coefficients[, "t value"], DIGITS_ROUND),
-    p_Wert = round(model_summary$coefficients[, "Pr(>|t|)"], 4),
-    Signifikanz = ifelse(model_summary$coefficients[, "Pr(>|t|)"] < 0.001, "***",
-                         ifelse(model_summary$coefficients[, "Pr(>|t|)"] < 0.01, "**",
-                                ifelse(model_summary$coefficients[, "Pr(>|t|)"] < 0.05, "*",
-                                       ifelse(model_summary$coefficients[, "Pr(>|t|)"] < 0.1, ".", "")))),
-    stringsAsFactors = FALSE
-  )
+  # Koeffizienten-Tabelle erstellen mit Referenzkategorien
+  coef_names <- rownames(model_summary$coefficients)
+  
+  # Extrahiere Referenzkategorien aus dem Modell
+  reference_categories <- list()
+  if (!is.null(model$xlevels)) {
+    for (var_name in names(model$xlevels)) {
+      # Erste Kategorie ist die Referenz
+      reference_categories[[var_name]] <- model$xlevels[[var_name]][1]
+    }
+  }
+  
+  # Erstelle erweiterte Koeffizienten-Tabelle
+  coef_rows <- list()
+  vars_seen <- character(0)  # Track welche Variablen wir schon gesehen haben
+  
+  for (i in seq_along(coef_names)) {
+    coef_name <- coef_names[i]
+    
+    # Füge Intercept direkt hinzu
+    if (coef_name == "(Intercept)") {
+      coef_row <- data.frame(
+        Variable = coef_name,
+        Koeffizient = smart_round_coefficient(model_summary$coefficients[i, "Estimate"]),
+        Std_Fehler = round(model_summary$coefficients[i, "Std. Error"], DIGITS_ROUND),
+        t_Wert = round(model_summary$coefficients[i, "t value"], DIGITS_ROUND),
+        p_Wert = round(model_summary$coefficients[i, "Pr(>|t|)"], 4),
+        Signifikanz = ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.001, "***",
+                             ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.01, "**",
+                                    ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.05, "*",
+                                           ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.1, ".", "")))),
+        stringsAsFactors = FALSE
+      )
+      coef_rows[[length(coef_rows) + 1]] <- coef_row
+      next
+    }
+    
+    # Extrahiere Variablennamen (ohne Level)
+    # Match: Buchstaben + Ziffern, aber stoppe vor Level-Bezeichnungen (AO, Ja, Nein, etc.)
+    # SD02AO02 → SD02, SD04Nein → SD04, AS02AO01 → AS02
+    var_base <- gsub("^([A-Za-z]+[0-9]*).*$", "\\1", coef_name)
+    
+    # Wenn dies die erste Ausprägung dieser Variable ist UND es eine Referenzkategorie gibt
+    if (!var_base %in% vars_seen && var_base %in% names(reference_categories)) {
+      # Füge Referenzkategorie ein
+      ref_row <- data.frame(
+        Variable = paste0(var_base, reference_categories[[var_base]], " (Ref.)"),
+        Koeffizient = "0",
+        Std_Fehler = "-",
+        t_Wert = "-",
+        p_Wert = "-",
+        Signifikanz = "",
+        stringsAsFactors = FALSE
+      )
+      coef_rows[[length(coef_rows) + 1]] <- ref_row
+      vars_seen <- c(vars_seen, var_base)
+    }
+    
+    # Füge aktuellen Koeffizienten hinzu
+    coef_row <- data.frame(
+      Variable = coef_name,
+      Koeffizient = smart_round_coefficient(model_summary$coefficients[i, "Estimate"]),
+      Std_Fehler = round(model_summary$coefficients[i, "Std. Error"], DIGITS_ROUND),
+      t_Wert = round(model_summary$coefficients[i, "t value"], DIGITS_ROUND),
+      p_Wert = round(model_summary$coefficients[i, "Pr(>|t|)"], 4),
+      Signifikanz = ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.001, "***",
+                           ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.01, "**",
+                                  ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.05, "*",
+                                         ifelse(model_summary$coefficients[i, "Pr(>|t|)"] < 0.1, ".", "")))),
+      stringsAsFactors = FALSE
+    )
+    coef_rows[[length(coef_rows) + 1]] <- coef_row
+  }
+  
+  # Kombiniere alle Zeilen
+  coef_table <- do.call(rbind, coef_rows)
   
   return(list(
     model = model,
@@ -7530,11 +7769,99 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL, conf
 # Logistische Regression
 perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
   
+  # PRÜFE OB AV BINÄR IST
+  av_name <- all.vars(formula_obj)[1]
+  
+  if (is.factor(data[[av_name]])) {
+    n_levels <- nlevels(data[[av_name]])
+    
+    if (n_levels != 2) {
+      cat("  ⚠ FEHLER: Logistische Regression erfordert binäre AV, aber", av_name, "hat", n_levels, "Levels\n")
+      cat("    Levels:", paste(levels(data[[av_name]]), collapse = ", "), "\n")
+      cat("    → Verwende 'ordinal' oder 'multinomial' als regression_type für mehr als 2 Kategorien\n")
+      return(list(error = paste("AV hat", n_levels, "Levels statt 2 - verwende ordinal/multinomial Regression")))
+    }
+    
+    # Konvertiere Factor zu 0/1
+    cat("  Konvertiere binäre AV zu 0/1:", levels(data[[av_name]])[1], "= 0,", levels(data[[av_name]])[2], "= 1\n")
+    data[[av_name]] <- as.numeric(data[[av_name]]) - 1
+  } else if (is.numeric(data[[av_name]])) {
+    # Prüfe ob nur 0 und 1 vorkommen
+    unique_vals <- sort(unique(data[[av_name]][!is.na(data[[av_name]])]))
+    
+    # Prüfe ob Werte nahe bei 0/1 sind (mit Toleranz für Rundungsfehler)
+    if (length(unique_vals) > 2 || any(abs(unique_vals - round(unique_vals)) > 0.001)) {
+      cat("  ⚠ WARNUNG: AV enthält nicht-ganzzahlige oder mehr als 2 Werte:", paste(head(unique_vals, 10), collapse = ", "), "\n")
+      cat("    → Runde auf 0/1\n")
+      data[[av_name]] <- round(data[[av_name]])
+    }
+    
+    # Finale Prüfung
+    unique_vals_final <- unique(data[[av_name]][!is.na(data[[av_name]])])
+    if (!all(unique_vals_final %in% c(0, 1))) {
+      cat("  ⚠ FEHLER: Nach Rundung enthält AV immer noch andere Werte als 0/1:", paste(unique_vals_final, collapse = ", "), "\n")
+      return(list(error = "AV muss binär (0/1) sein für logistische Regression"))
+    }
+    
+    cat("  AV ist binär: 0 (n=", sum(data[[av_name]] == 0, na.rm = TRUE), "), 1 (n=", sum(data[[av_name]] == 1, na.rm = TRUE), ")\n")
+  }
+  
   if (!is.null(survey_obj) && WEIGHTS) {
     # Gewichtete logistische Regression
-    survey_complete <- subset(survey_obj, complete.cases(survey_obj$variables[, all.vars(formula_obj)]))
-    model <- svyglm(formula_obj, survey_complete, family = binomial())
-    n <- nrow(survey_complete$variables)
+    if (!WEIGHT_VAR %in% names(data)) {
+      cat("  ⚠ WARNUNG: Gewichtungsvariable", WEIGHT_VAR, "nicht in Daten gefunden\n")
+      cat("    → Führe ungewichtete Regression durch\n")
+      model <- glm(formula_obj, data = data, family = binomial())
+      n <- nrow(data)
+    } else {
+      cat("  Verwende gewichtete logistische Regression mit glm(weights=...)\n")
+      
+      # Prüfe Gewichte
+      weights_vec <- data[[WEIGHT_VAR]]
+      n_weights <- length(weights_vec)
+      n_data <- nrow(data)
+      n_valid_weights <- sum(!is.na(weights_vec))
+      
+      cat("    Gewichte: N =", n_data, "| Gültige Gewichte:", n_valid_weights, "\n")
+      
+      if (n_weights != n_data) {
+        cat("  ⚠ WARNUNG: Gewichtsvariable hat falsche Länge (", n_weights, "vs", n_data, ")\n")
+        cat("    → Führe ungewichtete Regression durch\n")
+        model <- glm(formula_obj, data = data, family = binomial())
+        n <- nrow(data)
+      } else if (n_valid_weights < n_data * 0.9) {
+        cat("  ⚠ WARNUNG: Zu viele fehlende Gewichte (", n_data - n_valid_weights, "von", n_data, ")\n")
+        cat("    → Führe ungewichtete Regression durch\n")
+        model <- glm(formula_obj, data = data, family = binomial())
+        n <- nrow(data)
+      } else {
+        # Verwende glm() mit weights - einfacher und robuster als svyglm()
+        model <- tryCatch({
+          # Füge Gewichte als temporäre Spalte hinzu (glm() sucht im data Environment)
+          data$.weights_temp <- as.numeric(data[[WEIGHT_VAR]])
+          cat("    Gewichte als Spalte hinzugefügt, Länge:", length(data$.weights_temp), "\n")
+          
+          # Führe gewichtete Regression durch
+          m <- glm(formula_obj, data = data, family = binomial(), weights = .weights_temp)
+          
+          # Entferne temporäre Spalte
+          data$.weights_temp <- NULL
+          
+          cat("  ✓ Gewichtete Regression erfolgreich\n")
+          m
+        }, error = function(e) {
+          cat("  ⚠ FEHLER bei gewichteter glm():", e$message, "\n")
+          cat("    → Führe ungewichtete Regression durch\n")
+          # Cleanup
+          if (".weights_temp" %in% names(data)) {
+            data$.weights_temp <- NULL
+          }
+          return(glm(formula_obj, data = data, family = binomial()))
+        })
+        
+        n <- nrow(data)
+      }
+    }
   } else {
     # Standard logistische Regression
     model <- glm(formula_obj, data = data, family = binomial())
@@ -7543,20 +7870,84 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
   
   model_summary <- summary(model)
   
-  # Koeffizienten-Tabelle
-  coef_table <- data.frame(
-    Variable = rownames(model_summary$coefficients),
-    Koeffizient = sapply(model_summary$coefficients[, "Estimate"], smart_round_coefficient),
-    Std_Fehler = round(model_summary$coefficients[, "Std. Error"], DIGITS_ROUND),
-    z_Wert = round(model_summary$coefficients[, "z value"], DIGITS_ROUND),
-    p_Wert = round(model_summary$coefficients[, "Pr(>|z|)"], 4),
-    Odds_Ratio = round(exp(model_summary$coefficients[, "Estimate"]), DIGITS_ROUND),
-    Signifikanz = ifelse(model_summary$coefficients[, "Pr(>|z|)"] < 0.001, "***",
-                         ifelse(model_summary$coefficients[, "Pr(>|z|)"] < 0.01, "**",
-                                ifelse(model_summary$coefficients[, "Pr(>|z|)"] < 0.05, "*",
-                                       ifelse(model_summary$coefficients[, "Pr(>|z|)"] < 0.1, ".", "")))),
-    stringsAsFactors = FALSE
-  )
+  # Koeffizienten-Tabelle mit Referenzkategorien
+  coef_names <- rownames(model_summary$coefficients)
+  
+  # Extrahiere Referenzkategorien aus dem Modell
+  reference_categories <- list()
+  if (!is.null(model$xlevels)) {
+    for (var_name in names(model$xlevels)) {
+      # Erste Kategorie ist die Referenz
+      reference_categories[[var_name]] <- model$xlevels[[var_name]][1]
+    }
+  }
+  
+  # Erstelle erweiterte Koeffizienten-Tabelle
+  coef_rows <- list()
+  vars_seen <- character(0)  # Track welche Variablen wir schon gesehen haben
+  
+  for (i in seq_along(coef_names)) {
+    coef_name <- coef_names[i]
+    
+    # Füge Intercept direkt hinzu
+    if (coef_name == "(Intercept)") {
+      coef_row <- data.frame(
+        Variable = coef_name,
+        Koeffizient = smart_round_coefficient(model_summary$coefficients[i, "Estimate"]),
+        Std_Fehler = round(model_summary$coefficients[i, "Std. Error"], DIGITS_ROUND),
+        z_Wert = round(model_summary$coefficients[i, "z value"], DIGITS_ROUND),
+        p_Wert = round(model_summary$coefficients[i, "Pr(>|z|)"], 4),
+        Odds_Ratio = round(exp(model_summary$coefficients[i, "Estimate"]), DIGITS_ROUND),
+        Signifikanz = ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.001, "***",
+                             ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.01, "**",
+                                    ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.05, "*",
+                                           ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.1, ".", "")))),
+        stringsAsFactors = FALSE
+      )
+      coef_rows[[length(coef_rows) + 1]] <- coef_row
+      next
+    }
+    
+    # Extrahiere Variablennamen (ohne Level)
+    # Match: Buchstaben + Ziffern, aber stoppe vor Level-Bezeichnungen
+    var_base <- gsub("^([A-Za-z]+[0-9]*).*$", "\\1", coef_name)
+    
+    # Wenn dies die erste Ausprägung dieser Variable ist UND es eine Referenzkategorie gibt
+    if (!var_base %in% vars_seen && var_base %in% names(reference_categories)) {
+      # Füge Referenzkategorie ein
+      ref_row <- data.frame(
+        Variable = paste0(var_base, reference_categories[[var_base]], " (Ref.)"),
+        Koeffizient = "0",
+        Std_Fehler = "-",
+        z_Wert = "-",
+        p_Wert = "-",
+        Odds_Ratio = "1",
+        Signifikanz = "",
+        stringsAsFactors = FALSE
+      )
+      coef_rows[[length(coef_rows) + 1]] <- ref_row
+      vars_seen <- c(vars_seen, var_base)
+    }
+    
+    # Füge aktuellen Koeffizienten hinzu
+    coef_row <- data.frame(
+      Variable = coef_name,
+      Koeffizient = smart_round_coefficient(model_summary$coefficients[i, "Estimate"]),
+      Std_Fehler = round(model_summary$coefficients[i, "Std. Error"], DIGITS_ROUND),
+      z_Wert = round(model_summary$coefficients[i, "z value"], DIGITS_ROUND),
+      p_Wert = round(model_summary$coefficients[i, "Pr(>|z|)"], 4),
+      Odds_Ratio = round(exp(model_summary$coefficients[i, "Estimate"]), DIGITS_ROUND),
+      Signifikanz = ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.001, "***",
+                           ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.01, "**",
+                                  ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.05, "*",
+                                         ifelse(model_summary$coefficients[i, "Pr(>|z|)"] < 0.1, ".", "")))),
+      stringsAsFactors = FALSE
+    )
+    coef_rows[[length(coef_rows) + 1]] <- coef_row
+  }
+  
+  # Kombiniere alle Zeilen
+  coef_table <- do.call(rbind, coef_rows)
   
   # Pseudo R² und weitere Statistiken
   null_deviance <- model$null.deviance
