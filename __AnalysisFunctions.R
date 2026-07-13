@@ -1702,8 +1702,15 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         )
       }
       
-      # Gesamtzahl für Prozente
-      total_count <- sum(freq_df$count)
+      # Gesamtzahl für Prozente: Nur Kategorien zählen, die auch in unique_responses sind
+      # FIX: freq_df kann Kategorien enthalten (z.B. "7" für Weiß nicht), die in unique_responses
+      # nicht als eigene Spalte auftauchen. Dann würden diese Counts in total_count eingehen,
+      # aber nicht in den Summen der Einzelkategorien erscheinen -> Gesamt N = max der Erhebung statt
+      # tatsächlicher gültiger Antworten pro Item.
+      freq_responses_clean <- as.character(freq_df$response)
+      unique_responses_char <- as.character(unique_responses)
+      matching_responses <- freq_responses_clean %in% unique_responses_char
+      total_count <- sum(freq_df$count[matching_responses])
       
       # *** FIX: Ergebnis-Zeile mit expliziten Datentypen initialisieren ***
       result_row <- data.frame(
