@@ -3481,8 +3481,13 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   config <- index_result$config
   
   # 5. CUSTOM VARIABLES ERSTELLEN (jetzt können sie auf Indices zugreifen)
-  cat("Erstelle Custom-Variablen...\n")
-  data <- add_custom_vars(data)
+  if (exists("add_custom_vars") && is.function(add_custom_vars)) {
+    cat("Erstelle Custom-Variablen...\n")
+    data <- add_custom_vars(data)
+    cat("✅ Custom-Variablen erfolgreich erstellt\n")
+  } else {
+    cat("ℹ️  Keine add_custom_vars()-Funktion definiert -> übersprungen\n")
+  }
   
   # 6. CONFIG AN ALLE VARIABLEN ANPASSEN (jetzt mit Indices + Custom Variables!)
   cat("Aktualisiere Config für sanitierte Variablennamen...\n")
