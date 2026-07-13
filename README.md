@@ -9,7 +9,8 @@ Dieses R-Skript führt eine automatisierte Auswertung von Umfragedaten durch, ba
 ```
 ├── Analysis-Cockpit.R           # Hauptskript mit Konfiguration
 ├── __AnalysisFunctions.R        # Analysefunktionen 
-├── Prepare-SPSS-Data.R          # SPSS-Datenschnittstelle (optional)
+├── 0_Codebook_erstellen_aus_SPSS.R  # SPSS-Codebook (optional)
+├── 1_Daten vorbereiten aus SPSS.R   # SPSS-Import (optional)
 ├── Analysis-Config.xlsx         # Konfigurationsdatei (EXCEL)
 ├── Rohdaten/
 │   └── survey_data.rds          # Ihre Umfragedaten (.rds, .csv oder .xlsx)
@@ -192,7 +193,7 @@ meta_vars_to_remove <- c("id", "lastpage", "startlanguage", "seed",
 
 ## Custom Variables
 
-Das Skript kann automatisch zusätzliche Variablen erstellen. Diese werden in der Funktion `add_custom_vars()` definiert:
+Das Skript kann automatisch zusätzliche Variablen erstellen. Dazu muss im Analyse-Skript eine Funktion `add_custom_vars()` definiert werden:
 
 ```r
 add_custom_vars <- function(data) {
@@ -215,22 +216,31 @@ add_custom_vars <- function(data) {
 }
 ```
 
+**Hinweis**: Falls `add_custom_vars()` nicht definiert ist, wird dieser Schritt übersprungen. Die Definition ist vollständig optional.
+
 ## Index-Bildung
 
 Automatische Erstellung von Indizes aus Matrix-Items:
 
 ```r
 index_definitions <- list(
-  generate_index_definition(
+  list(
     name = "zufriedenheit_index", 
     label = "Zufriedenheits-Index", 
-    prefix = "GP01", 
-    range = 1:5
+    vars_original = paste0("GP01[", sprintf("%03d", 1:5), "]")
   )
 )
 ```
 
-Dies erstellt automatisch einen Index aus `GP01[001]` bis `GP01[005]`.
+Dies erstellt automatisch einen Index aus `GP01[001]` bis `GP01[005]` als Mittelwert der Items.
+
+### Parameter für Index-Definitionen:
+- **`name`**: Name der neuen Index-Variable (z.B. `zufriedenheit_index`)
+- **`label`**: Anzeigelabel für den Index
+- **`vars_original`**: Vektor der ursprünglichen Variablennamen (z.B. `GP01[001]`, `GP01[002]`, ...)
+- **`binary`** (optional): `TRUE` für binäre Indizes (leer/NA = 0, "1" = 1), `FALSE` (Default) für Mittelwert-Indizes
+
+**Hinweis**: Falls `index_definitions` nicht definiert ist, wird die Index-Erstellung übersprungen.
 
 ## Ausgabe
 
@@ -308,24 +318,24 @@ Bei Problemen:
 ## Lizenz & Autor
 
 R Survey Analysis Script  
-Version: 1.3.0  
-Datum: 12.10.2025  
+Version: 1.6.0  
+Datum: 13.07.2026  
 Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf Excel-Konfiguration
 
 
 ## Zitiervorschlag
 
-Henke, J. (2025). R Survey Analysis Script (Version 1.3.0) [Software]. 
+Henke, J. (2026). R Survey Analysis Script (Version 1.6.0) [Software]. 
 Institut für Hochschulforschung Halle-Wittenberg. https://github.com/JustusHenke/r-analysis-script
 
 ```BibTex
-@software{Henke_QCA-AID_2025,
+@software{Henke_R_Survey_Analysis_2026,
   author       = {Henke, Justus},
   title        = {{R Survey Analysis Script}},
-  month        = december,
-  year         = {2025},
+  month        = july,
+  year         = {2026},
   publisher    = {Institut für Hochschulforschung Halle-Wittenberg},
-  version      = {1.3.0},
+  version      = {1.6.0},
   url          = {https://github.com/JustusHenke/r-analysis-script}
 }
 ```

@@ -2,15 +2,25 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Version: 1.5.5
-# Datum: 21.01.2026
-# Letzte Änderung: Kategoriale Auszählungen für ordinale Variablen
+# Version: 1.6.0
+# Datum: 13.07.2026
+# Letzte Änderung: Matrix N-Fix, add_custom_vars optional, Metadaten-Variablen entfernen
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
 #               und Regressionsanalysen
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.6.0 (13.07.2026) - METADATEN ENTFERNEN & MATRIX N-FIX
+#   • FEATURE: Metadaten-Variablen können automatisch entfernt werden
+#     (meta_vars_to_remove optional, z.B. id, lastpage, token, etc.)
+#   • ENHANCEMENT: add_custom_vars() überspringbar wenn nicht definiert
+#   • ENHANCEMENT: index_definitions überspringbar wenn nicht definiert
+#   • FIX: Matrix Gesamt-N = gültige Antworten pro Item (statt Gesamtstichprobe)
+#     - total_count berücksichtigt nur Kategorien in unique_responses
+#     - Prozentangaben korrekt auf tatsächlich gültige Antworten bezogen
+#   • ENHANCEMENT: README aktualisiert (Version 1.6.0, korrigierte API-Doku)
+#
 # v1.5.5 (20.02.2026) - KATEGORIALE AUSZÄHLUNGEN FÜR ORDINALE VARIABLEN
 #   • FIX: Ordinale Variablen in Kreuztabellen zeigen IMMER kategoriale Auszählungen
 #   • FIX: Kategoriale Tabellen werden auch erstellt wenn Gruppenmittelwerte fehlschlagen
