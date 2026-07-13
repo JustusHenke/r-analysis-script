@@ -177,6 +177,19 @@ DIGITS_ROUND <- 2                # Rundung auf Dezimalstellen
 INCLUDE_MISSING_DEFAULT <- FALSE # Fehlende Werte standardmäßig ausschließen
 ```
 
+## Metadaten-Variablen entfernen
+
+Das Skript kann automatisch Metadaten-Variablen entfernen, die nicht analysiert werden sollen (z.B. LimeSurvey-Technik-Variablen).
+
+```r
+# Optional: Definiere Variablen die entfernt werden sollen
+meta_vars_to_remove <- c("id", "lastpage", "startlanguage", "seed", 
+                          "startdate", "datestamp", "ipaddr", "refurl",
+                          "token", "interviewtime")
+```
+
+**Hinweis**: Falls nicht definiert, werden keine Variablen automatisch entfernt. Die Liste ist vollständig optional und kann an Ihre Bedürfnisse angepasst werden.
+
 ## Custom Variables
 
 Das Skript kann automatisch zusätzliche Variablen erstellen. Diese werden in der Funktion `add_custom_vars()` definiert:

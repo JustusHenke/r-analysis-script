@@ -3278,7 +3278,7 @@ create_survey_object <- function(data, weight_var) {
 # VEREINFACHTE DATEN LADEN UND VORBEREITEN
 # =============================================================================
 
-load_and_prepare_data <- function(config, index_definitions = list(), custom_var_labels = NULL, custom_val_labels = NULL) {
+load_and_prepare_data <- function(config, index_definitions = list(), custom_var_labels = NULL, custom_val_labels = NULL, meta_vars_to_remove = NULL) {
   cat("\nLade Daten aus:", DATA_FILE, "\n")
   
   check_file_exists(DATA_FILE)
@@ -3551,8 +3551,11 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   category_info <- auto_detect_categories(data, config)
   data <- category_info$data
   
-  # 9. METADATEN ENTFERNEN
-  data <- data %>% select(-any_of(meta_vars_to_remove))
+  # 9. METADATEN ENTFERNEN (falls definiert)
+  if (!is.null(meta_vars_to_remove) && length(meta_vars_to_remove) > 0) {
+    cat("Entferne Metadaten-Variablen:", paste(meta_vars_to_remove, collapse = ", "), "\n")
+    data <- data %>% select(-any_of(meta_vars_to_remove))
+  }
   
   # 10. VARIABLENTYPEN SETZEN
   data <- prepare_variable_types_minimal(data, config)
@@ -9907,6 +9910,9 @@ main <- function() {
   if (!exists("custom_val_labels")) {
     custom_val_labels <- NULL
   }
+  if (!exists("meta_vars_to_remove")) {
+    meta_vars_to_remove <- NULL
+  }
   
   # *** LOGGING SETUP ***
   if (exists("LOG") && LOG == TRUE) {
@@ -9932,7 +9938,7 @@ main <- function() {
     # 3. Daten laden und vorbereiten
     cat("\n3. DATEN LADEN UND VORBEREITEN\n")
     cat("-------------------------------\n")
-    prepared_data <- load_and_prepare_data(config, index_definitions, custom_var_labels, custom_val_labels)
+    prepared_data <- load_and_prepare_data(config, index_definitions, custom_var_labels, custom_val_labels, meta_vars_to_remove)
     
     # 4. Deskriptive Analysen
     cat("\n4. DESKRIPTIVE STATISTIKEN\n")
