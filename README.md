@@ -97,6 +97,7 @@ Definiert Regressionsmodelle:
 | `independent_vars` | Unabhängige Variablen | `SD01;SD04;AS07` |
 | `regression_type` | Modell-Typ | `linear` |
 | `filter` | Filter-Bedingung (OPTIONAL) | `ALTER>=18` |
+| `cluster_variable` | Clustering-Variable für Mehrebenenmodelle (OPTIONAL) | `attribute_2` |
 
 #### Regressions-Typen:
 - **`linear`**: Lineare Regression
@@ -292,7 +293,7 @@ Für hierarchische Daten (z.B. Studierende in Hochschulen):
 ```r
 regression_type: multilevel
 ```
-Das Skript erkennt automatisch Clustering-Variablen wie `hochschul_id` oder `attribute_2`.
+Die Clustering-Variable (z.B. Hochschul-ID) kann in der Config-Spalte `cluster_variable` angegeben werden. Wenn die Spalte leer ist, versucht das Skript eine Heuristik (mit Warnung).
 
 ### [other]-Variablen
 Für "Sonstiges"-Antworten:
@@ -318,14 +319,14 @@ Bei Problemen:
 ## Lizenz & Autor
 
 R Survey Analysis Script  
-Version: 1.6.0  
-Datum: 13.07.2026  
+Version: 1.7.0  
+Datum: 23.07.2026  
 Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf Excel-Konfiguration
 
 
 ## Zitiervorschlag
 
-Henke, J. (2026). R Survey Analysis Script (Version 1.6.0) [Software]. 
+Henke, J. (2026). R Survey Analysis Script (Version 1.7.0) [Software]. 
 Institut für Hochschulforschung Halle-Wittenberg. https://github.com/JustusHenke/r-analysis-script
 
 ```BibTex
@@ -335,7 +336,7 @@ Institut für Hochschulforschung Halle-Wittenberg. https://github.com/JustusHenk
   month        = july,
   year         = {2026},
   publisher    = {Institut für Hochschulforschung Halle-Wittenberg},
-  version      = {1.6.0},
+  version      = {1.7.0},
   url          = {https://github.com/JustusHenke/r-analysis-script}
 }
 ```

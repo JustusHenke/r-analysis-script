@@ -6,37 +6,37 @@ Erstellt eine neue Analysis-Config.xlsx Vorlage mit Filter-Spalten.
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-def create_config_template(output_file="Analysis-Config_v1.3.xlsx"):
+def create_config_template(output_file="Analysis-Config_v1.7.xlsx"):
     """Erstellt eine Excel-Konfigurationsvorlage mit Filter-Spalten."""
-    
+
     # Arbeitsmappe erstellen
     wb = openpyxl.Workbook()
-    
+
     # =============================================================================
     # SHEET 1: VARIABLEN
     # =============================================================================
-    
+
     ws_variablen = wb.active
     ws_variablen.title = "Variablen"
-    
+
     # Spaltenüberschriften mit Formatierung
     headers = [
-        "variable_name", "question_text", "data_type", "coding", 
+        "variable_name", "question_text", "data_type", "coding",
         "min_value", "max_value", "reverse_coding", "use_NA", "filter"
     ]
-    
+
     # Formatierung für Kopfzeile
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
     header_alignment = Alignment(horizontal="center", vertical="center")
-    
+
     # Kopfzeile schreiben
     for col_idx, header in enumerate(headers, start=1):
         cell = ws_variablen.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = header_alignment
-    
+
     # Beispiel-Daten für Variablen-Sheet
     examples = [
         # variable_name, question_text, data_type, coding, min_value, max_value, reverse_coding, use_NA, filter
@@ -49,33 +49,33 @@ def create_config_template(output_file="Analysis-Config_v1.3.xlsx"):
         ["NW01", "Welche Netzwerke nutzen Sie?", "matrix", "1=Ausgewählt", "", "", "FALSE", "FALSE", "SD02 >= 25"],
         ["zufriedenheit_index", "Zufriedenheits-Index (Mittelwert)", "numeric", "", "1", "5", "FALSE", "TRUE", "!is.na(zufriedenheit_index)"]
     ]
-    
+
     # Beispiel-Daten schreiben
     for row_idx, example in enumerate(examples, start=2):
         for col_idx, value in enumerate(example, start=1):
             ws_variablen.cell(row=row_idx, column=col_idx, value=value)
-    
+
     # Spaltenbreiten anpassen
     column_widths = [20, 40, 15, 40, 12, 12, 15, 12, 30]
     for i, width in enumerate(column_widths, start=1):
         ws_variablen.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
-    
+
     # =============================================================================
     # SHEET 2: KREUZTABELLEN
     # =============================================================================
-    
+
     ws_kreuztabellen = wb.create_sheet(title="Kreuztabellen")
-    
+
     # Spaltenüberschriften
     headers = ["analysis_name", "variable_1", "variable_2", "statistical_test", "filter"]
-    
+
     # Kopfzeile schreiben
     for col_idx, header in enumerate(headers, start=1):
         cell = ws_kreuztabellen.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = header_alignment
-    
+
     # Beispiel-Daten für Kreuztabellen
     examples = [
         # analysis_name, variable_1, variable_2, statistical_test, filter
@@ -85,69 +85,69 @@ def create_config_template(output_file="Analysis-Config_v1.3.xlsx"):
         ["Matrix_Zufriedenheit_x_Geschlecht", "ZS01", "SD01", "mann_whitney", ""],
         ["Netzwerk_x_Alter", "NW01", "SD02", "chi_square", "SD02 >= 25 & SD02 <= 60"]
     ]
-    
+
     # Beispiel-Daten schreiben
     for row_idx, example in enumerate(examples, start=2):
         for col_idx, value in enumerate(example, start=1):
             ws_kreuztabellen.cell(row=row_idx, column=col_idx, value=value)
-    
+
     # Spaltenbreiten anpassen
     column_widths = [30, 15, 15, 20, 40]
     for i, width in enumerate(column_widths, start=1):
         ws_kreuztabellen.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
-    
+
     # =============================================================================
     # SHEET 3: REGRESSIONEN
     # =============================================================================
-    
+
     ws_regressionen = wb.create_sheet(title="Regressionen")
-    
+
     # Spaltenüberschriften
-    headers = ["regression_name", "dependent_var", "independent_vars", "regression_type", "filter"]
-    
+    headers = ["regression_name", "dependent_var", "independent_vars", "regression_type", "filter", "cluster_variable"]
+
     # Kopfzeile schreiben
     for col_idx, header in enumerate(headers, start=1):
         cell = ws_regressionen.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = header_alignment
-    
+
     # Beispiel-Daten für Regressionen
     examples = [
-        # regression_name, dependent_var, independent_vars, regression_type, filter
-        ["Zufriedenheit_Modell", "zufriedenheit_index", "SD01;SD02;SD03", "linear", ""],
-        ["Motivation_Modell", "AS01", "SD01;SD02;SD03", "linear", "SD02 >= 18"],
-        ["Geschlecht_Regression", "GP01", "SD01", "t_test", ""],
-        ["Interaktion_Modell", "zufriedenheit_index", "SD01*SD02;SD03", "linear", "!is.na(zufriedenheit_index)"],
-        ["Mehrebenen_Modell", "GP01", "SD02;AS01", "multilevel", "SD01 == 1"]
+        # regression_name, dependent_var, independent_vars, regression_type, filter, cluster_variable
+        ["Zufriedenheit_Modell", "zufriedenheit_index", "SD01;SD02;SD03", "linear", "", ""],
+        ["Motivation_Modell", "AS01", "SD01;SD02;SD03", "linear", "SD02 >= 18", ""],
+        ["Geschlecht_Regression", "GP01", "SD01", "t_test", "", ""],
+        ["Interaktion_Modell", "zufriedenheit_index", "SD01*SD02;SD03", "linear", "!is.na(zufriedenheit_index)", ""],
+        ["Mehrebenen_Modell", "GP01", "SD02;AS01", "multilevel", "SD01 == 1", "attribute_2"]
     ]
-    
+
     # Beispiel-Daten schreiben
     for row_idx, example in enumerate(examples, start=2):
         for col_idx, value in enumerate(example, start=1):
             ws_regressionen.cell(row=row_idx, column=col_idx, value=value)
-    
+
     # Spaltenbreiten anpassen
-    column_widths = [25, 20, 30, 20, 40]
+    column_widths = [25, 20, 30, 20, 40, 20]
     for i, width in enumerate(column_widths, start=1):
         ws_regressionen.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
-    
+
     # =============================================================================
     # SHEET 4: TEXTANTWORTEN
     # =============================================================================
-    
+
     ws_textantworten = wb.create_sheet(title="Textantworten")
-    
+
     # Spaltenüberschriften
     headers = ["analysis_name", "text_variable", "sort_variable", "min_length", "include_empty", "filter"]
-    
+
     # Kopfzeile schreiben
     for col_idx, header in enumerate(headers, start=1):
         cell = ws_textantworten.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = header_alignment
-    
+
     # Beispiel-Daten für Textantworten
     examples = [
         # analysis_name, text_variable, sort_variable, min_length, include_empty, filter
@@ -156,27 +156,27 @@ def create_config_template(output_file="Analysis-Config_v1.3.xlsx"):
         ["Freitext_Feedback", "ZF01[other]", "", "10", "FALSE", ""],
         ["Kommentare_zum_Studium", "ST09[other]", "GP01", "3", "FALSE", "SD01 == 1"]
     ]
-    
+
     # Beispiel-Daten schreiben
     for row_idx, example in enumerate(examples, start=2):
         for col_idx, value in enumerate(example, start=1):
             ws_textantworten.cell(row=row_idx, column=col_idx, value=value)
-    
+
     # Spaltenbreiten anpassen
     column_widths = [25, 25, 20, 12, 15, 40]
     for i, width in enumerate(column_widths, start=1):
         ws_textantworten.column_dimensions[openpyxl.utils.get_column_letter(i)].width = width
-    
+
     # =============================================================================
     # INFORMATIONSSHEET MIT FILTER-SYNTAX
     # =============================================================================
-    
+
     ws_info = wb.create_sheet(title="Filter_Syntax_Hilfe")
-    
+
     # Titel
     ws_info.cell(row=1, column=1, value="FILTER-SYNTAX FÜR DIE KONFIGURATION").font = Font(bold=True, size=14)
     ws_info.merge_cells('A1:F1')
-    
+
     # Allgemeine Informationen
     info_rows = [
         ["", "", "", "", "", ""],
@@ -200,8 +200,14 @@ def create_config_template(output_file="Analysis-Config_v1.3.xlsx"):
         ["• Leere Filter-Zellen bedeuten: KEIN FILTER angewendet", "", "", "", "", ""],
         ["• Filter reduzieren die Fallzahl N für die jeweilige Analyse", "", "", "", "", ""],
         ["• Filter-Info wird im Excel-Output dokumentiert", "", "", "", "", ""],
+        ["", "", "", "", "", ""],
+        ["CLUSTER_VARIABLE (Mehrebenenmodelle):", "", "", "", "", ""],
+        ["• Nur für regression_type='multilevel' relevant", "", "", "", "", ""],
+        ["• Gibt die Gruppierungsvariable an (z.B. Hochschul-ID)", "", "", "", "", ""],
+        ["• Wenn leer: Heuristik wird als Fallback verwendet (mit Warnung)", "", "", "", "", ""],
+        ["• Beispiel: 'attribute_2' oder 'hochschul_id'", "", "", "", "", ""],
     ]
-    
+
     for row_idx, row_data in enumerate(info_rows, start=3):
         for col_idx, value in enumerate(row_data, start=1):
             if value:
@@ -210,11 +216,11 @@ def create_config_template(output_file="Analysis-Config_v1.3.xlsx"):
                     cell.font = Font(bold=True, size=14)
                 elif "Syntax-Beispiele:" in str(value) or "WICHTIGE HINWEISE:" in str(value):
                     cell.font = Font(bold=True)
-    
+
     # Spaltenbreiten anpassen
     for i in range(1, 7):
         ws_info.column_dimensions[openpyxl.utils.get_column_letter(i)].width = 25
-    
+
     # Arbeitsmappe speichern
     wb.save(output_file)
     print(f"ERFOLG: Konfigurationsvorlage erstellt: {output_file}")

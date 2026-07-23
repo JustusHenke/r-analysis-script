@@ -2,15 +2,119 @@
 # SURVEY DATENAUSWERTUNG MIT KONFIGURIERBARER EXCEL-STEUERUNG
 # =============================================================================
 # Autor: Survey Analysis Script
-# Version: 1.6.0
-# Datum: 13.07.2026
-# Letzte Änderung: Matrix N-Fix, add_custom_vars optional, Metadaten-Variablen entfernen
+# Version: 1.7.0
+# Datum: 23.07.2026
+# Letzte Änderung: Security-Audit Phase 1-4, Performance-Optimierungen, Code-Qualität
 # Beschreibung: Automatisierte Auswertung von Survey-Daten basierend auf 
 #               Excel-Konfiguration mit deskriptiven Statistiken, Kreuztabellen
 #               und Regressionsanalysen
 #
 # CHANGELOG - Letzte Änderungen:
 # ─────────────────────────────────────────────────────────────────────────
+# v1.7.0 (23.07.2026) - SECURITY AUDIT & RELIABILITY FIXES
+#
+# PERFORMANCE (Phase 3):
+#   • FIX: extract_numeric_from_matrix_coding per-row Schleife vektorisiert
+#     - Neue convert_ordinal_to_numeric() Hilfsfunktion (vektorisierte Regex)
+#     - Ersetzt 5+ duplizierte for-Loops durch einen vektorisierten Aufruf
+#   • FIX: create_numeric_index_safe: for-loop → rowMeans() (~100x schneller)
+#   • FIX: 5 separate svyquantile-Aufrufe → 1 konsolidierter Aufruf pro Variable
+#     - create_numeric_table und create_group_means_table
+#   • FIX: O(n²) rbind() in Schleife → list + do.call(rbind, ...)
+#   • FIX: Per-row Label-Matching in extract_text_responses_simple vektorisiert
+#   • FIX: Triplicated category collection in create_matrix_table entfernt
+#   • FIX: Duplicate make_clean_colname Zeile entfernt
+#
+# MAINTAINABILITY & CODE QUALITY (Phase 4):
+#   • FIX: close_logging sink() nur mit sink.number() > 0 aufrufen
+#   • FIX: create_survey_object: Gewichts-Validierung (NA, negativ, Null-Varianz)
+#   • FIX: switch() in create_descriptive_tables: Default-Branch für unbekannte Typen
+#   • FIX: length() → nchar() für Text-Truncierung in Fehlerbehandlung
+#   • FIX: DIGITS_ROUND/ALPHA_LEVEL/INCLUDE_MISSING_DEFAULT Default-Definitionen
+#   • FIX: export_regressions_old vollständig entfernt (Dead Code)
+#   • FIX: 1:nrow() → seq_len(nrow()) an 13 Stellen (verhindert 1:0-Bug)
+#   • FIX: Duplicate Step-Nummerierung in main() korrigiert (5→6→7→8→9)
+#   • FIX: Fallback-Quantile auf NA gesetzt statt mean (vermeidet Missverständnisse)
+#   • FIX: URL-Encoding via utils::URLencode(reserved=TRUE) statt gsub(" ","%20")
+#
+# REMAINING FINDINGS (Phase 5):
+#   • FIX: make_clean_colname: Namen mit führenden Ziffern bekommen Präfix (A036)
+#   • FIX: convert_likert_to_numeric: Word-Boundary \\b verhindert Match von "10" (A042)
+#   • FIX: dirname(OUTPUT_FILE) mit NULL-Guard (A048)
+#   • FIX: result$type access mit is.null+identical Guard (A050)
+#   • FIX: Stille Fehlerbehandlung → warning() (A051)
+#   • FIX: Regex-Metacharacter in matrix_name escaped (A053)
+#   • FIX: check_within_cluster_variance: Division-durch-Null Guards (A066)
+#   • FIX: find_single_variable: NULL statt NA bei keinem Match (A069)
+#   • FIX: export_errors_and_warnings: regression_results werden jetzt ausgewertet (A071)
+#   • FIX: model_fit N-Wert mit Fallback "N/A" (A077)
+#   • FIX: Interaction term exclusion mit unique() (A080)
+#   • FIX: lmer/glmer: withCallingHandlers für Konvergenz-Warnungen + isSingular (A082)
+#   • FIX: glmer: Fehler bei >2 Level Faktor (A065)
+#   • FIX: Singulärer Fit → Fallback auf Random-Intercept-only Modell (A067)
+#   • FIX: Multilevel df als Approximation dokumentiert (A068)
+#   • FIX: Codebook-Subsetting mit [1] gegen Duplikate (A085)
+#   • FIX: install.packages mit tryCatch + Verifikation (A083)
+#   • FIX: LIKERT_MARKERS_CUSTOM mit envir=.GlobalEnv (A079)
+#   • FIX: output_base wird verwendet für Textantworten-Dateiname (A074)
+#   • FIX: smart_round_coefficient: Konsistent numeric zurückgeben (A114)
+#   • FIX: VarCorr NA → "Residual" (A115)
+#   • FIX: Duplicated regex pattern in Variable (A107)
+#   • FIX: Konvertierungsqualität-Check bei ordinal→numeric in Regression (A070)
+#
+# SECURITY (Phase 1):
+#   • CRITICAL FIX: eval(parse()) Filter-Parser durch AST-basierte Allowlist ersetzt
+#     - Rekursive Prüfung aller Funktionsaufrufe gegen erlaubte Operatoren
+#     - Gefährliche Zeichen (Semikolon, Backtick, Backslash) → stop() statt warning()
+#     - eval() mit enclos = baseenv() abgesichert
+#   • CRITICAL FIX: readRDS() in tryCatch gewrappt + Sicherheitswarnung für RDS-Dateien
+#     - create_global_codebook: Fallback auf automatische Codebook-Generierung
+#     - load_and_prepare_data: Warnung vor potenzieller Code-Ausführung
+#
+# STATISTICAL CORRECTNESS (Phase 1-2):
+#   • CRITICAL FIX: Ordinale Regression nutzt jetzt MASS::polr (statt OLS)
+#     - Fallback auf lineare Regression mit klarer Kennzeichnung
+#   • FIX: as.numeric(factor) → as.numeric(as.character()) an 3 Stellen
+#     - prepare_variable_types, apply_reverse_coding, convert_factor_to_numeric_safe
+#     - Verhindert stille Datenkorruption durch Integer-Codes
+#   • FIX: Welch's t-Test korrekt als "Welch's t-Test" beschriftet
+#   • FIX: Gewichtete ANOVA via svyglm implementiert (statt immer ungewichtet)
+#   • FIX: na.rm = !use_na Logik korrigiert → immer na.rm = TRUE
+#   • FIX: Eta² ANOVA-Spaltennamen dynamisch ermittelt (statt hartcodiert)
+#   • FIX: Mann-Whitney-U Test: Stichprobengrößen-Check + tryCatch
+#   • FIX: chisq.test in warning handler mit suppressWarnings gewrappt
+#
+# RELIABILITY (Phase 1-2):
+#   • FIX: return(NULL) in tryCatch error handler → extraction_result-Pattern
+#     - perform_regression: Saubere Fehlerbehandlung statt stiller Abbruch
+#   • FIX: <<- in tryCatch error handler → assign(..., envir = parent.frame())
+#     - create_group_means_table: total_stats safe propagation
+#   • FIX: Survey-Objekt-Mutation mit on.exit() abgesichert
+#     - Garantierte Restaurierung auch bei Fehlern
+#   • FIX: Division-durch-Null-Guards an 10+ Stellen
+#     - create_matrix_table, create_nominal_coded/text_table, perform_cramers_v
+#     - export_descriptive_statistics, export_crosstabs, run_regressions
+#   • FIX: NULL/Error-Prüfung in main() Vorschau-Schleife
+#   • FIX: saveWorkbook/saveRDS in tryCatch gewrappt
+#   • ENHANCEMENT: weights_enabled() Hilfsfunktion mit exists()-Guard
+#     - 36 bare WEIGHTS-Referenzen ersetzt
+#   • ENHANCEMENT: exists()-Guards für SAVE_FINAL_DATASET, WEIGHTS, WEIGHT_VAR
+#   • ENHANCEMENT: safe_formula() Hilfsfunktion gegen Formel-Injection
+#   • FIX: custom_var_labels mit exists()-Guard abgesichert
+#
+# CONFIG & ARCHITEKTUR:
+#   • FEATURE: Cluster-Variable aus Config (Sheet 'Regressionen', Spalte 'cluster_variable')
+#     - Hartcodierte Patterns (attribute_2, hochschul_id, etc.) vollständig entfernt
+#     - detect_cluster_variable: Priorität 1 = Config, Priorität 2 = Heuristik (mit Warnung)
+#     - Pro-Regression Zuordnung via regression_name-Matching
+#     - load_config: cluster_variable-Spalte wird eingelesen (mit NA-Fallback)
+#   • ENHANCEMENT: config NULL-Guard in perform_statistical_test
+#   • ENHANCEMENT: detect_cluster_variable: looks_like_id-Check + Warnung bei Heuristik
+#
+# BEGLEITENDE DATEIEN:
+#   • create_config_template.py: cluster_variable-Spalte + Doku im Hilfe-Sheet
+#   • Analysis-Config.xlsx: cluster_variable-Spalte in Regressionen-Sheet hinzugefügt
+#
 # v1.6.0 (13.07.2026) - METADATEN ENTFERNEN & MATRIX N-FIX
 #   • FEATURE: Metadaten-Variablen können automatisch entfernt werden
 #     (meta_vars_to_remove optional, z.B. id, lastpage, token, etc.)
@@ -157,8 +261,8 @@ setup_logging <- function(log_file = NULL) {
   # Verzeichnis erstellen falls nicht vorhanden
   dir.create(dirname(log_file), showWarnings = FALSE, recursive = TRUE)
   
-  # Öffne Log-Verbindung
-  log_connection <<- file(log_file, open = "wt", encoding = "UTF-8")
+  # Öffne Log-Verbindung (A008 Fix: explizites assign in .GlobalEnv)
+  assign("log_connection", file(log_file, open = "wt", encoding = "UTF-8"), envir = .GlobalEnv)
   
   # Redirect Console-Ausgabe zu Log-Datei (split=TRUE = auch zu Console)
   sink(log_file, append = TRUE, split = TRUE)
@@ -169,8 +273,10 @@ setup_logging <- function(log_file = NULL) {
 close_logging <- function() {
   "Schließt Logging (sink + file)"
   
-  # Reset sink
-  sink()
+  # Reset sink (nur wenn ein aktiver Sink existiert — A029 Fix)
+  if (sink.number() > 0) {
+    sink()
+  }
   
   # Schließe Log-Verbindung
   if (!is.null(log_connection)) {
@@ -179,7 +285,7 @@ close_logging <- function() {
     }, error = function(e) {
       base::cat("Warnung beim Schließen der Log-Datei:", e$message, "\n")
     })
-    log_connection <<- NULL
+    assign("log_connection", NULL, envir = .GlobalEnv)
   }
 }
 
@@ -202,6 +308,150 @@ cat_log <- function(...) {
 # =============================================================================
 
 # Funktion zum sicheren Laden von Packages
+# Hilfsfunktion: Prüft ob gewichtete Analyse aktiv ist (mit exists-Guard)
+# Globale Defaults (können von Analysis-Cockpit.R überschrieben werden — A099 Fix)
+if (!exists("DIGITS_ROUND", envir = .GlobalEnv)) DIGITS_ROUND <- 2L
+if (!exists("ALPHA_LEVEL", envir = .GlobalEnv)) ALPHA_LEVEL <- 0.05
+if (!exists("INCLUDE_MISSING_DEFAULT", envir = .GlobalEnv)) INCLUDE_MISSING_DEFAULT <- FALSE
+
+weights_enabled <- function(survey_obj = NULL) {
+  !is.null(survey_obj) && exists("WEIGHTS", envir = .GlobalEnv) && WEIGHTS
+}
+
+# Hilfsfunktion: Sicheres Abrufen des global_codebook mit Strukturvalidierung (A078/A009 Fix)
+get_global_codebook <- function() {
+  if (!exists("global_codebook", envir = .GlobalEnv)) return(NULL)
+  codebook <- get("global_codebook", envir = .GlobalEnv)
+  if (!is.data.frame(codebook) || !"Variable" %in% names(codebook)) {
+    warning("global_codebook hat ungültige Struktur (erwartet: data.frame mit Spalte 'Variable')")
+    return(NULL)
+  }
+  codebook
+}
+
+# Hilfsfunktion: Escape von Regex-Metacharacters in Variablennamen (A053 Fix)
+escape_regex <- function(x) {
+  chars <- c(".", "[", "]", "(", ")", "{", "}", "*", "+", "?", "^", "$", "|")
+  for (ch in chars) {
+    x <- gsub(ch, paste0("\\", ch), x, fixed = TRUE)
+  }
+  x
+}
+
+# Hilfsfunktion: Sichere Formel-Erstellung mit Variablennamen-Absicherung
+# Verhindert Formel-Injection durch nicht-escaped Variablennamen
+safe_formula <- function(...) {
+  parts <- list(...)
+  # Sanitize alle Variablennamen-Teile (nicht Operatoren)
+  sanitized <- lapply(parts, function(p) {
+    if (is.character(p) && !p %in% c("~", "+", "-")) {
+      # Backtick-Quoting für nicht-standardmäßig gültige Namen
+      if (!grepl("^[a-zA-Z.][a-zA-Z0-9._]*$", p)) {
+        paste0("`", p, "`")
+      } else {
+        p
+      }
+    } else {
+      p
+    }
+  })
+  as.formula(do.call(paste, sanitized))
+}
+
+# Hilfsfunktion: Vektorisierte Konvertierung von ordinalen/kategorialen Werten zu numerisch
+# Ersetzt 5+ duplizierte per-row Schleifen (A023)
+convert_ordinal_to_numeric <- function(char_values, labels = NULL, min_value = NA, max_value = NA) {
+  "Vektorisierte Konvertierung: AO01->1, '1 (trifft zu)'->1, direkte numerische Werte.
+  
+  Args:
+    char_values: Character-Vektor mit Werten
+    labels: Named vector (code = label) aus parse_coding(), optional
+    min_value, max_value: Bereichsfilter (Werte außerhalb -> NA)
+  
+  Returns:
+    Numeric-Vektor gleicher Länge"
+  
+  if (is.null(char_values) || length(char_values) == 0) return(numeric(0))
+  
+  # Konvertiere zu Character falls noch nicht
+  char_values <- as.character(char_values)
+  result <- rep(NA_real_, length(char_values))
+  non_na <- !is.na(char_values) & char_values != ""
+  
+  if (!any(non_na)) return(result)
+  
+  vals <- char_values[non_na]
+  
+  # Strategie 1: AO01, AO02 Pattern -> extrahiere Nummer (vektorisiert)
+  is_ao <- grepl("^AO\\d+$", vals)
+  if (any(is_ao)) {
+    ao_numbers <- as.numeric(gsub("^AO0*", "", vals[is_ao]))
+    vals_ao <- rep(NA_real_, length(vals))
+    vals_ao[is_ao] <- ao_numbers
+    result[non_na] <- ifelse(is.na(result[non_na]), vals_ao, result[non_na])
+  }
+  
+  # Strategie 2: Label-basierte Extraktion (vektorisiert via Lookup)
+  if (!is.null(labels) && length(labels) > 0) {
+    # 2a: Direkte Code-Übereinstimmung (code = label-Wert)
+    direct_match <- match(vals, names(labels))
+    has_direct <- !is.na(direct_match)
+    if (any(has_direct)) {
+      codes <- names(labels)[direct_match[has_direct]]
+      nums <- suppressWarnings(as.numeric(codes))
+      valid <- !is.na(nums)
+      idx <- which(has_direct & !is.na(result[non_na]) & FALSE | (has_direct & is.na(result[non_na])))
+      # Einfacher: überschreibe nur wo noch NA
+      still_na <- is.na(result[non_na])
+      for (j in which(has_direct & still_na)) {
+        num_val <- suppressWarnings(as.numeric(names(labels)[direct_match[j]]))
+        if (!is.na(num_val)) result[non_na][j] <<- num_val
+      }
+    }
+    
+    # 2b: Label-Text beginnt mit Zahl (z.B. "1 (trifft zu)" -> 1)
+    label_lookup <- labels[vals]
+    has_label <- !is.na(label_lookup) & grepl("^\\d+", label_lookup)
+    if (any(has_label)) {
+      numbers_from_label <- as.numeric(str_extract(label_lookup[has_label], "^\\d+"))
+      still_na <- is.na(result[non_na])
+      label_nums <- rep(NA_real_, length(vals))
+      label_nums[has_label] <- numbers_from_label
+      update_idx <- has_label & still_na
+      if (any(update_idx)) {
+        result[non_na][update_idx] <- label_nums[update_idx]
+      }
+    }
+  }
+  
+  # Strategie 3: Numerischer Präfix im Wert selbst (vektorisiert)
+  still_na <- is.na(result[non_na])
+  if (any(still_na)) {
+    prefix_nums <- suppressWarnings(as.numeric(str_extract(vals[still_na], "^\\d+")))
+    valid_prefix <- !is.na(prefix_nums)
+    if (any(valid_prefix)) {
+      result[non_na][still_na][valid_prefix] <- prefix_nums[valid_prefix]
+    }
+  }
+  
+  # Strategie 4: Direkte numerische Konvertierung (Fallback, vektorisiert)
+  still_na <- is.na(result[non_na])
+  if (any(still_na)) {
+    direct_nums <- suppressWarnings(as.numeric(vals[still_na]))
+    result[non_na][still_na] <- direct_nums
+  }
+  
+  # Min/Max Bereichsfilter (vektorisiert)
+  if (!is.na(min_value)) {
+    result[result < min_value] <- NA
+  }
+  if (!is.na(max_value)) {
+    result[result > max_value] <- NA
+  }
+  
+  return(result)
+}
+
 load_packages <- function() {
   required_packages <- c(
     "readxl",      # Excel lesen
@@ -220,10 +470,22 @@ load_packages <- function() {
   # Prüfen welche Packages fehlen
   missing_packages <- required_packages[!required_packages %in% installed.packages()[,"Package"]]
   
-  # Fehlende Packages installieren
+  # Fehlende Packages installieren (A083 Fix: mit tryCatch und Verifikation)
   if(length(missing_packages) > 0) {
     cat("Installiere fehlende Packages:", paste(missing_packages, collapse = ", "), "\n")
-    install.packages(missing_packages, dependencies = TRUE)
+    tryCatch({
+      install.packages(missing_packages, dependencies = TRUE)
+    }, error = function(e) {
+      stop("Fehler bei der Package-Installation: ", e$message,
+           "\nBitte installieren Sie folgende Packages manuell: ", 
+           paste(missing_packages, collapse = ", "))
+    })
+    # Verifikation: Prüfe ob Installation erfolgreich war
+    still_missing <- missing_packages[!missing_packages %in% installed.packages()[,"Package"]]
+    if (length(still_missing) > 0) {
+      stop("Folgende Packages konnten nicht installiert werden: ", 
+           paste(still_missing, collapse = ", "))
+    }
   }
   
   # Packages laden
@@ -264,7 +526,7 @@ get_labels <- function(var_name, label_type = "value", config = NULL) {
     return(if (label_type == "value") NULL else var_name)
   }
   
-  codebook <- get("global_codebook", envir = .GlobalEnv)
+  codebook <- get_global_codebook()
   
   if (!var_name %in% codebook$Variable) {
     return(if (label_type == "value") NULL else var_name)
@@ -286,7 +548,7 @@ get_labels <- function(var_name, label_type = "value", config = NULL) {
     }
     
     # 2. Hole aus Codebook
-    wertelabels_str <- codebook$Wertelabels[codebook$Variable == var_name]
+    wertelabels_str <- codebook$Wertelabels[codebook$Variable == var_name][1]
     if (!is.na(wertelabels_str) && wertelabels_str != "keine" && wertelabels_str != "") {
       labels <- parse_coding(wertelabels_str)
       return(labels)
@@ -299,7 +561,7 @@ get_labels <- function(var_name, label_type = "value", config = NULL) {
   # VARIABLEN-LABEL (für Spaltenüberschriften)
   # ============================================================================
   if (label_type == "variable") {
-    var_label <- codebook$Label[codebook$Variable == var_name]
+    var_label <- codebook$Label[codebook$Variable == var_name][1]
     
     if (!is.na(var_label) && var_label != "" && var_label != var_name) {
       # Kürze wenn zu lang
@@ -335,7 +597,7 @@ get_labels <- function(var_name, label_type = "value", config = NULL) {
     }
     
     # 2. Hole aus Codebook
-    var_label <- codebook$Label[codebook$Variable == var_name]
+    var_label <- codebook$Label[codebook$Variable == var_name][1]
     
     if (!is.na(var_label) && var_label != "" && var_label != var_name) {
       # Extrahiere Text aus eckigen Klammern
@@ -383,22 +645,39 @@ create_global_codebook <- function(data, external_codebook_file = NULL) {
   # Versuche externes Codebook zu laden
   if (!is.null(external_codebook_file) && file.exists(external_codebook_file)) {
     cat("Lade externes Codebook:", external_codebook_file, "\n")
-    codebook_df <- readRDS(external_codebook_file)
+    codebook_df <- tryCatch({
+      readRDS(external_codebook_file)
+    }, error = function(e) {
+      cat("WARNUNG: Externes Codebook konnte nicht geladen werden:", e$message, "\n")
+      cat("Falle zurück auf automatische Codebook-Generierung.\n")
+      return(NULL)
+    })
     
-    # Validierung
-    required_cols <- c("Variable", "Label", "Typ", "Wertelabels")
-    if (all(required_cols %in% names(codebook_df))) {
-      # Filtere nur Variablen die auch in den Daten vorhanden sind
-      codebook_df <- codebook_df[codebook_df$Variable %in% names(data), ]
-      
-      cat("✓ Externes Codebook geladen für", nrow(codebook_df), "Variablen\n")
-      cat("  Variablen mit Labels:", sum(codebook_df$Wertelabels != "keine"), "\n")
-      
-      # Speichere global
-      assign("global_codebook", codebook_df, envir = .GlobalEnv)
-      return(invisible(codebook_df))
+    if (is.null(codebook_df)) {
+      # Fallback: Codebook aus Daten generieren
+      codebook_df <- data.frame(
+        Variable = names(data),
+        Label = "",
+        Typ = vapply(data, function(x) paste(class(x), collapse = ", "), character(1)),
+        Wertelabels = "keine",
+        stringsAsFactors = FALSE
+      )
     } else {
-      cat("⚠ Externes Codebook hat nicht das richtige Format, erstelle neues\n")
+      # Validierung des geladenen Codebooks
+      required_cols <- c("Variable", "Label", "Typ", "Wertelabels")
+      if (all(required_cols %in% names(codebook_df))) {
+        # Filtere nur Variablen die auch in den Daten vorhanden sind
+        codebook_df <- codebook_df[codebook_df$Variable %in% names(data), ]
+        
+        cat("✓ Externes Codebook geladen für", nrow(codebook_df), "Variablen\n")
+        cat("  Variablen mit Labels:", sum(codebook_df$Wertelabels != "keine"), "\n")
+        
+        # Speichere global
+        assign("global_codebook", codebook_df, envir = .GlobalEnv)
+        return(invisible(codebook_df))
+      } else {
+        cat("⚠ Externes Codebook hat nicht das richtige Format, erstelle neues\n")
+      }
     }
   }
   
@@ -411,7 +690,7 @@ create_global_codebook <- function(data, external_codebook_file = NULL) {
       label <- attr(x, "label")
       if (is.null(label)) "" else as.character(label)
     }),
-    Typ = sapply(data, function(x) paste(class(x), collapse = ", ")),
+    Typ = vapply(data, function(x) paste(class(x), collapse = ", "), character(1)),
     Wertelabels = sapply(data, function(x) {
       labels <- attr(x, "labels")
       if (!is.null(labels)) {
@@ -488,9 +767,9 @@ detect_variable_type_advanced <- function(var_name, data, config = NULL) {
   # Hole Labels aus globalem Codebook
   labels <- NULL
   if (exists("global_codebook", envir = .GlobalEnv)) {
-    codebook <- get("global_codebook", envir = .GlobalEnv)
+    codebook <- get_global_codebook()
     if (var_name %in% codebook$Variable) {
-      wertelabels <- codebook$Wertelabels[codebook$Variable == var_name]
+      wertelabels <- codebook$Wertelabels[codebook$Variable == var_name][1]
       if (!is.na(wertelabels) && wertelabels != "keine") {
         # Parse Wertelabels (Format: "AO01 = Weiblich; AO02 = Männlich")
         labels <- parse_coding(wertelabels)
@@ -700,49 +979,59 @@ parse_filter_expression <- function(filter_string, data_columns = NULL) {
   
   cat("Parsing Filter:", filter_string, "\n")
   
-  # Sicherheitsprüfung: Verbotene Funktionen
-  forbidden_patterns <- c(
-    "\\blibrary\\(",
-    "\\bsource\\(",
-    "\\bsystem\\(",
-    "\\bfile\\(",
-    "\\bread\\(",
-    "\\bwrite\\(",
-    "\\beval\\(",
-    "\\bparse\\(",
-    "\\bget\\(",
-    "\\bsetwd\\(",
-    "\\bdir\\(",
-    "\\bsetwd\\("
-  )
-  
-  for (pattern in forbidden_patterns) {
-    if (grepl(pattern, filter_string, ignore.case = TRUE)) {
-      stop("Filter enthält unerlaubte Funktion: ", filter_string)
-    }
-  }
-  
-  # Erlaubte Operatoren und Funktionen
-  allowed_patterns <- c(
-    # Operatoren
-    "==", "!=", ">", "<", ">=", "<=", "&", "\\|", "!", "\\(", "\\)",
-    # Funktionen
-    "\\bis\\.na\\(",
-    "\\bnchar\\(",
-    "\\bgrepl\\(",
-    "\\bsubstr\\(",
-    "\\bstr_detect\\(",
-    "\\b%in%",
-    "\\bis\\.numeric\\(",
-    "\\bis\\.character\\("
-  )
-  
-  # Validierung der Syntax durch Parsing-Versuch
-  parsed_expr <- tryCatch({
+  # Sicherheitsprüfung: AST-basierte Allowlist (ersetzt umgehbare Blacklist)
+  # Parses den Ausdruck und prüft rekursiv alle Funktionsaufrufe gegen eine Allowlist
+  parsed_for_check <- tryCatch({
     parse(text = filter_string)
   }, error = function(e) {
     stop("Filter-Syntaxfehler in '", filter_string, "': ", e$message)
   })
+  
+  # Rekursive AST-Prüfung: Erlaubt nur sichere Operatoren und Funktionen
+  allowed_functions <- c(
+    "==", "!=", ">", "<", ">=", "<=", "&", "|", "!", "(", 
+    "%in%", "is.na", "nchar", "grepl", "substr", "str_detect",
+    "is.numeric", "is.character", "c", "&", "|"
+  )
+  
+  check_ast <- function(expr_node) {
+    if (is.call(expr_node)) {
+      func_name <- as.character(expr_node[[1]])
+      if (func_name %in% c("{", "(")) {
+        # Klammern/Blöcke: rekursiv prüfen
+        for (i in 2:length(expr_node)) {
+          check_ast(expr_node[[i]])
+        }
+      } else if (func_name %in% allowed_functions) {
+        # Erlaubte Funktion: Argumente rekursiv prüfen
+        for (i in 2:length(expr_node)) {
+          check_ast(expr_node[[i]])
+        }
+      } else {
+        stop("Filter enthält nicht erlaubte Funktion: '", func_name, 
+             "' in Filter: ", filter_string)
+      }
+    } else if (is.recursive(expr_node)) {
+      # Rekursiv für verschachtelte Ausdrücke
+      for (i in seq_along(expr_node)) {
+        if (!is.null(expr_node[[i]])) check_ast(expr_node[[i]])
+      }
+    }
+  }
+  
+  for (expr_node in parsed_for_check[[1]]) {
+    check_ast(expr_node)
+  }
+  
+  # Gefährliche Zeichen prüfen (strikter als vorher: stop statt warning)
+  dangerous_pattern <- "[;$`\\\\]"
+  if (grepl(dangerous_pattern, filter_string)) {
+    stop("Potentiell unsichere Zeichen im Filter '", filter_string, 
+         "': Semikolons, Backticks und Backslashes sind nicht erlaubt")
+  }
+  
+  # Validierung der Syntax durch Parsing-Versuch
+  parsed_expr <- parsed_for_check
   
   # Extrahiere alle Variablen aus dem Ausdruck
   variables_in_expr <- all.vars(parsed_expr)
@@ -756,33 +1045,7 @@ parse_filter_expression <- function(filter_string, data_columns = NULL) {
     }
   }
   
-  # Erlaubte Zeichen überprüfen (zusätzliche Sicherheit)
-  # Erweiterte Liste erlaubter Zeichen für R-Syntax
-  allowed_chars <- "[a-zA-Z0-9._><=!&|()\"'\\[\\]\\s\\-+,%]"
-  illegal_chars <- gsub(allowed_chars, "", filter_string)
-  
-  # Entferne bekannte sichere Operatoren und Funktionen
-  illegal_chars <- gsub(" ", "", illegal_chars)       # Leerzeichen
-  illegal_chars <- gsub("==", "", illegal_chars)      # ==
-  illegal_chars <- gsub("!=", "", illegal_chars)      # !=
-  illegal_chars <- gsub("<=", "", illegal_chars)      # <=
-  illegal_chars <- gsub(">=", "", illegal_chars)      # >=
-  illegal_chars <- gsub("%in%", "", illegal_chars)    # %in%
-  illegal_chars <- gsub("\\(", "", illegal_chars)     # (
-  illegal_chars <- gsub("\\)", "", illegal_chars)     # )
-  illegal_chars <- gsub("'", "", illegal_chars)       # '
-  illegal_chars <- gsub("\"", "", illegal_chars)      # "
-  illegal_chars <- gsub(",", "", illegal_chars)       # ,
-  
-  # Nur warnen wenn wirklich verdächtige Zeichen übrig sind
-  if (nchar(illegal_chars) > 0) {
-    # Prüfe ob es wirklich gefährliche Zeichen sind
-    dangerous_chars <- grepl("[;$`\\\\]", illegal_chars)
-    if (dangerous_chars) {
-      warning("Potentiell unsichere Zeichen im Filter '", filter_string, "': '", 
-              paste(unique(strsplit(illegal_chars, "")[[1]]), collapse = "', '"), "'")
-    }
-  }
+  # (Zeichen-Validierung bereits oben via AST-Prüfung und dangerous_pattern-Check erfolgt)
   
   return(parsed_expr)
 }
@@ -803,8 +1066,8 @@ apply_filter <- function(data, filter_expr) {
   }
   
   tryCatch({
-    # Evaluierung im Datensatz-Kontext
-    filter_result <- eval(filter_expr, envir = data)
+    # Evaluierung im Datensatz-Kontext (mit eingeschränkter Umgebung)
+    filter_result <- eval(filter_expr, envir = data, enclos = baseenv())
     
     # Sicherstellen, dass Ergebnis logisch ist
     if (!is.logical(filter_result)) {
@@ -999,7 +1262,8 @@ load_config <- function() {
   if ("Regressionen" %in% sheet_names) {
     config$regressionen <- read_excel(CONFIG_FILE, sheet = "Regressionen", col_types = "text") %>%
       mutate(
-        filter = if("filter" %in% names(.)) filter else NA_character_
+        filter = if("filter" %in% names(.)) filter else NA_character_,
+        cluster_variable = if("cluster_variable" %in% names(.)) cluster_variable else NA_character_
       ) %>%
       filter(!is.na(regression_name) & regression_name != "")
     cat("Regressions-Konfiguration geladen:", nrow(config$regressionen), "Analysen\n")
@@ -1068,98 +1332,27 @@ validate_variable_config <- function(variablen_config) {
 # =============================================================================
 
 extract_numeric_from_matrix_coding <- function(data_values, coding_string, min_value = NA, max_value = NA) {
-  "Extrahiert numerische Werte aus Matrix-Items basierend auf Kodierung und filtert nach min/max"
+  "Extrahiert numerische Werte aus Matrix-Items basierend auf Kodierung und filtert nach min/max
   
-  if (is.na(coding_string) || coding_string == "") {
+  Vektorisierte Implementierung via convert_ordinal_to_numeric() (A023 Fix)"
+  
+  if (is.null(coding_string) || is.na(coding_string) || coding_string == "") {
     return(as.numeric(data_values))
   }
   
-  if (!is.na(min_value) && !is.na(max_value)) {
-    # Wertebereich definiert
-  }
-  
-  # Parse coding - verbesserte Version für Matrix-Format
+  # Parse coding
   labels <- parse_coding(coding_string)
   
   if (is.null(labels) || length(labels) == 0) {
     return(as.numeric(data_values))
   }
-  # 
-  # Konvertiere Werte basierend auf Kodierung
-  numeric_values <- rep(NA, length(data_values))
   
-  for (i in seq_along(data_values)) {
-    if (!is.na(data_values[i])) {
-      current_value <- as.character(data_values[i])
-      extracted_number <- NA
-      
-      # *** NEUE STRATEGIE 1: AO01, AO02 Pattern direkt verarbeiten ***
-      if (grepl("^AO\\d+$", current_value)) {
-        # Extrahiere Nummer aus AO01 -> 01 -> 1
-        ao_number <- gsub("^AO0*", "", current_value)  # Entferne AO und führende Nullen
-        if (ao_number != "" && !is.na(suppressWarnings(as.numeric(ao_number)))) {
-          extracted_number <- as.numeric(ao_number)
-        }
-      }
-      
-      # *** ENHANCED STRATEGIE 2: Extrahiere Zahlen aus Labels für AO-Pattern ***
-      if (is.na(extracted_number) && current_value %in% names(labels)) {
-        label_text <- labels[current_value]
-        
-        # Prüfe ob Label mit Zahl beginnt (z.B. "1 (trifft überhaupt nicht zu)")
-        if (grepl("^\\d+", label_text)) {
-          number_from_label <- as.numeric(str_extract(label_text, "^\\d+"))
-          if (!is.na(number_from_label)) {
-            extracted_number <- number_from_label
-          }
-        }
-        
-        # Fallback: Extrahiere numerischen Code aus AO-Key (alte Logik)
-        if (is.na(extracted_number)) {
-          ao_match <- gsub("^AO0*", "", current_value)
-          if (ao_match != "" && !is.na(suppressWarnings(as.numeric(ao_match)))) {
-            extracted_number <- as.numeric(ao_match)
-          }
-        }
-      }
-      
-      # Strategie 3: Direkte Label-Übereinstimmung (bestehende Logik)
-      if (is.na(extracted_number)) {
-        matching_code <- names(labels)[labels == current_value]
-        if (length(matching_code) > 0) {
-          extracted_number <- as.numeric(matching_code[1])
-        }
-      }
-      
-      # Strategie 4: Suche nach numerischem Präfix im data_value
-      if (is.na(extracted_number)) {
-        numeric_match <- str_extract(current_value, "^\\d+")
-        if (!is.na(numeric_match) && numeric_match %in% names(labels)) {
-          extracted_number <- as.numeric(numeric_match)
-        }
-      }
-      
-      # Strategie 5: Fallback - direkte Konvertierung
-      if (is.na(extracted_number)) {
-        extracted_number <- suppressWarnings(as.numeric(current_value))
-      }
-      
-      # *** NEUE VALIDIERUNG: Prüfe min/max Bereich ***
-      if (!is.na(extracted_number)) {
-        if (!is.na(min_value) && extracted_number < min_value) {
-          extracted_number <- NA
-        } else if (!is.na(max_value) && extracted_number > max_value) {
-          extracted_number <- NA
-        }
-      }
-      
-      numeric_values[i] <- extracted_number
-    }
-  }
+  # Vektorisierte Konvertierung
+  numeric_values <- convert_ordinal_to_numeric(data_values, labels, min_value, max_value)
   
   successful_conversions <- sum(!is.na(numeric_values))
   total_values <- length(data_values[!is.na(data_values)])
-  
+
   return(numeric_values)
 }
 
@@ -1471,25 +1664,12 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       # Aktualisiere im Datensatz
       data[[var]] <- var_values
     }
-    
-    # Nach Normalisierung: Kategorien neu sammeln
-    all_responses <- c()
-    for (var in matrix_vars) {
-      var_values <- data[[var]]
-      
-      if (!use_na) {
-        var_responses <- unique(var_values[!is.na(var_values)])
-      } else {
-        var_responses <- unique(var_values)
-      }
-      all_responses <- c(all_responses, var_responses)
-    }
+    # Kategorien-Sammlung erfolgt einmalig nach der Normalisierungsschleife (A088 Fix)
   } else {
     cat("Keine Datentyp-Normalisierung erforderlich\n")
   }
   
-  # *** FIX: IMMER Kategorien nach potentieller Normalisierung neu sammeln ***
-  # Dies stellt sicher, dass unique_responses die tatsächlichen Datenwerte widerspiegelt
+  # Kategorien sammeln (einmalig, nach potentieller Normalisierung)
   all_responses_final <- c()
   for (var in matrix_vars) {
     var_values <- data[[var]]
@@ -1514,7 +1694,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
   # Das ursprüngliche survey_obj enthält die unnormalisierten Daten (AO01, AO02, etc.)
   # Nach der Normalisierung enthalten die Daten aber numerische Werte (1, 2, 3, etc.)
   # Dies führt zu einem Mismatch bei svytable() -> alle Häufigkeiten = 0
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     cat("🔄 Survey-Objekt wird nach Datentyp-Normalisierung neu erstellt...\n")
     
     # Prüfe ob WEIGHT_VAR existiert
@@ -1584,7 +1764,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     cat("Erstelle kategoriale Tabelle für dichotome Matrix\n")
     
     # *** FIX: Use weighted totals when survey object is available ***
-    if (!is.null(survey_obj) && WEIGHTS) {
+    if (weights_enabled(survey_obj)) {
       total_n <- sum(weights(survey_obj))  # Weighted total
       cat("Verwende gewichtete Häufigkeiten für dichotome Matrix (N =", round(total_n, 1), ")\n")
     } else {
@@ -1599,7 +1779,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       # FALLBACK: Falls Label schlecht ist, versuche bessere Extraktion
       if (grepl("^(Item|Item:|Subquestion)", item_label)) {
         # Suche nach besseren Labels in custom_var_labels oder Attributen
-        if (var %in% names(custom_var_labels) && !is.na(custom_var_labels[[var]])) {
+        if (exists("custom_var_labels", envir = .GlobalEnv) && var %in% names(custom_var_labels) && !is.na(custom_var_labels[[var]])) {
           item_label <- custom_var_labels[[var]]
         } else {
           # Verbessertes Fallback-Label
@@ -1615,7 +1795,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       var_data <- data[[var]]
       
       # *** FIX: Use weighted or unweighted counts based on survey object ***
-      if (!is.null(survey_obj) && WEIGHTS) {
+      if (weights_enabled(survey_obj)) {
         # Weighted counts using survey object
         tryCatch({
           if (matrix_type_info$type == "dichotomous (Y/N data pattern)") {
@@ -1633,14 +1813,14 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
           cat("  Gewichtete Counts für", var, ": Ja =", round(count_yes, 1), ", Nein/leer =", round(count_no_or_empty, 1), "\n")
         }, error = function(e) {
           cat("  ⚠️  Gewichtete Berechnung fehlgeschlagen für", var, ":", e$message, "\n")
-          # Fallback to unweighted
+          # Fallback to unweighted — verwende <<- damit Werte in den Parent-Frame propagiert werden
           if (matrix_type_info$type == "dichotomous (Y/N data pattern)") {
-            count_yes <- sum(var_data == "Y", na.rm = TRUE)
+            count_yes <<- sum(var_data == "Y", na.rm = TRUE)
           } else {
-            count_yes <- sum(var_data == "1", na.rm = TRUE)
+            count_yes <<- sum(var_data == "1", na.rm = TRUE)
           }
-          count_no_or_empty <- nrow(data) - count_yes
-          total_n <- nrow(data)
+          count_no_or_empty <<- nrow(data) - count_yes
+          total_n <<- nrow(data)
         })
       } else {
         # Unweighted counts (original logic)
@@ -1663,8 +1843,8 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         Item = as.character(item_label),
         Ausgewählt_absolut = as.numeric(count_yes),
         Nicht_ausgewählt_absolut = as.numeric(count_no_or_empty),
-        Ausgewählt_prozent = as.numeric(round(count_yes / total_n * 100, DIGITS_ROUND)),
-        Nicht_ausgewählt_prozent = as.numeric(round(count_no_or_empty / total_n * 100, DIGITS_ROUND)),
+        Ausgewählt_prozent = if (total_n > 0) as.numeric(round(count_yes / total_n * 100, DIGITS_ROUND)) else 0,
+        Nicht_ausgewählt_prozent = if (total_n > 0) as.numeric(round(count_no_or_empty / total_n * 100, DIGITS_ROUND)) else 0,
         Gesamt = as.numeric(total_n),
         stringsAsFactors = FALSE
       )
@@ -1688,15 +1868,15 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
       }
       
       # Häufigkeiten berechnen
-      if (!is.null(survey_obj) && WEIGHTS) {
-        # Gewichtete Häufigkeiten
+      if (weights_enabled(survey_obj)) {
+        # Gewichtete Häufigkeiten (A086 Fix: explizites Subsetting statt subset(get()))
         if (!use_na) {
-          survey_obj_filtered <- subset(survey_obj, !is.na(get(var)))
+          survey_obj_filtered <- survey_obj[!is.na(survey_obj$variables[[var]]), ]
         } else {
           survey_obj_filtered <- survey_obj
         }
         
-        freq_table <- svytable(as.formula(paste("~", var)), survey_obj_filtered)
+        freq_table <- svytable(safe_formula("~", var), survey_obj_filtered)
         freq_df <- data.frame(
           response = names(freq_table),
           count = as.numeric(freq_table),
@@ -1943,7 +2123,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
           # KORREKTUR: N = Gesamtstichprobe, nicht nur die mit Werten
           
           # Prüfe ob gewichtete Analyse gewünscht und möglich ist
-          if (!is.null(survey_obj) && WEIGHTS) {
+          if (weights_enabled(survey_obj)) {
             cat("  Erstelle gewichtete dichotome Statistiken für", var, "\n")
             
             tryCatch({
@@ -1975,7 +2155,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
               # Fallback zu ungewichteten Statistiken
               stats_row <- data.frame(
                 Item = as.character(item_label),
-                N = as.numeric(nrow(data)),
+                N = as.numeric(sum(!is.na(numeric_values))),
                 Anteil_Ja = as.numeric(round(mean(numeric_values, na.rm = TRUE), DIGITS_ROUND)),
                 Anzahl_Ja = as.numeric(sum(numeric_values == 1, na.rm = TRUE)),
                 Anzahl_Nein = as.numeric(sum(numeric_values == 0, na.rm = TRUE)),
@@ -1988,7 +2168,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
             # Ungewichtete Statistiken (ursprüngliche Logik)
             stats_row <- data.frame(
               Item = as.character(item_label),
-              N = as.numeric(nrow(data)),
+              N = as.numeric(sum(!is.na(numeric_values))),
               Anteil_Ja = as.numeric(round(mean(numeric_values, na.rm = TRUE), DIGITS_ROUND)),
               Anzahl_Ja = as.numeric(sum(numeric_values == 1, na.rm = TRUE)),
               Anzahl_Nein = as.numeric(sum(numeric_values == 0, na.rm = TRUE)),
@@ -1999,22 +2179,25 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
           # *** FIX: Ordinale Matrix stats_row mit gewichteten/ungewichteten Statistiken ***
           
           # Prüfe ob gewichtete Analyse gewünscht und möglich ist
-          if (!is.null(survey_obj) && WEIGHTS) {
+          if (weights_enabled(survey_obj)) {
             cat("  Erstelle gewichtete numerische Statistiken für", var, "\n")
             
             # Gewichtete Statistiken mit Survey-Paket
             tryCatch({
               # *** FIX: Temporarily update survey object data with range-filtered values ***
-              # Store original data
+              # Store original data and ensure restoration via on.exit
               original_var_data <- survey_obj$variables[[var]]
+              on.exit({
+                survey_obj$variables[[var]] <- original_var_data
+              }, add = TRUE)
               
               # Temporarily replace with range-filtered data
               survey_obj$variables[[var]] <- numeric_values
               
               # Filter survey object for non-NA values (which now excludes out-of-range)
-              survey_filtered <- subset(survey_obj, !is.na(get(var)))
+              survey_filtered <- survey_obj[!is.na(survey_obj$variables[[var]]), ]
               
-              # Restore original data after creating filtered object
+              # Restore original data (also done by on.exit as safety net)
               survey_obj$variables[[var]] <- original_var_data
               
               if (nrow(survey_filtered$variables) > 0) {
@@ -2053,8 +2236,8 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
                   median_val <- quant_vals[2] 
                   q3_val <- quant_vals[3]
                 } else {
-                  # Fallback if quantiles extraction fails
-                  q1_val <- median_val <- q3_val <- mean_val
+                  # Fallback if quantiles extraction fails (A034 Fix: NA statt mean)
+                  q1_val <- median_val <- q3_val <- NA_real_
                 }
                 
                 stats_row <- data.frame(
@@ -2219,7 +2402,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         n_items = length(matrix_vars),
         response_categories = unique_responses,
         response_labels = response_labels,
-        weighted = !is.null(survey_obj) && WEIGHTS,
+        weighted = weights_enabled(survey_obj),
         has_coding = TRUE,
         is_dichotomous = is_dichotomous_matrix
       ))
@@ -2238,7 +2421,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
         n_items = length(matrix_vars),
         response_categories = unique_responses,
         response_labels = response_labels,
-        weighted = !is.null(survey_obj) && WEIGHTS,
+        weighted = weights_enabled(survey_obj),
         has_coding = has_coding,
         is_dichotomous = TRUE
       ))
@@ -2256,7 +2439,7 @@ create_matrix_table <- function(data, var_config, use_na, survey_obj = NULL) {
     n_items = length(matrix_vars),
     response_categories = unique_responses,
     response_labels = response_labels,
-    weighted = !is.null(survey_obj) && WEIGHTS,
+    weighted = weights_enabled(survey_obj),
     has_coding = has_coding,
     is_dichotomous = is_dichotomous_matrix
   ))
@@ -2316,8 +2499,8 @@ make_clean_colname <- function(text) {
   clean <- gsub("_{2,}", "_", clean)  # Mehrfache Unterstriche reduzieren
   clean <- gsub("^_|_$", "", clean)   # Führende/nachfolgende Unterstriche entfernen
   
-  # Falls leer oder nur Zahlen, Präfix hinzufügen
-  if (clean == "" || grepl("^[0-9]+$", clean)) {
+  # Falls leer oder nur Zahlen oder startet mit Ziffer, Präfix hinzufügen
+  if (clean == "" || grepl("^[0-9]+$", clean) || grepl("^[0-9]", clean)) {
     clean <- paste0("Kategorie_", clean)
   }
   
@@ -2417,7 +2600,7 @@ update_config_variable_names <- function(config, data) {
     config$regressionen$dependent_var <- update_variable_list(config$regressionen$dependent_var, names(data))
     
     # Unabhängige Variablen (durch ; getrennt)
-    for (i in 1:nrow(config$regressionen)) {
+    for (i in seq_len(nrow(config$regressionen))) {
       indep_vars <- str_split(config$regressionen$independent_vars[i], ";")[[1]]
       indep_vars <- str_trim(indep_vars)
       updated_indep_vars <- update_variable_list(indep_vars, names(data))
@@ -2625,7 +2808,7 @@ apply_variable_labels <- function(data, custom_var_labels = NULL, custom_val_lab
 prepare_variable_types <- function(data, config) {
   cat("Bereite Variablentypen vor...\n")
   
-  for (i in 1:nrow(config$variablen)) {
+  for (i in seq_len(nrow(config$variablen))) {
     var_name <- config$variablen$variable_name[i]
     var_type <- config$variablen$data_type[i]
     
@@ -2635,7 +2818,11 @@ prepare_variable_types <- function(data, config) {
       
       # Datentyp setzen
       if (var_type == "numeric") {
-        data[[var_name]] <- as.numeric(data[[var_name]])
+        if (is.factor(data[[var_name]])) {
+          data[[var_name]] <- as.numeric(as.character(data[[var_name]]))
+        } else {
+          data[[var_name]] <- as.numeric(data[[var_name]])
+        }
       } else if (var_type %in% c("nominal_coded", "ordinal", "dichotom")) {
         data[[var_name]] <- as.factor(data[[var_name]])
       } else if (var_type %in% c("nominal_nominal", "matrix")) {
@@ -2655,7 +2842,7 @@ prepare_variable_types <- function(data, config) {
 prepare_variable_types_minimal <- function(data, config) {
   cat("Setze Variablentypen (mit Label-Erhaltung)...\n")
   
-  for (i in 1:nrow(config$variablen)) {
+  for (i in seq_len(nrow(config$variablen))) {
     var_name <- config$variablen$variable_name[i]
     var_type <- config$variablen$data_type[i]
     
@@ -2785,7 +2972,7 @@ convert_text_nas <- function(data, config) {
   
   na_patterns <- c("N/A", "n/a", "NA", "NULL", "", " ", "missing", "Missing")
   
-  for (i in 1:nrow(config$variablen)) {
+  for (i in seq_len(nrow(config$variablen))) {
     var_name <- config$variablen$variable_name[i]
     var_type <- config$variablen$data_type[i]
     
@@ -2823,14 +3010,21 @@ apply_reverse_coding <- function(data, config) {
   if (nrow(reverse_vars) > 0) {
     cat("Wende Reverse Coding an für:", nrow(reverse_vars), "Variablen\n")
     
-    for (i in 1:nrow(reverse_vars)) {
+    for (i in seq_len(nrow(reverse_vars))) {
       var <- reverse_vars$variable_name[i]
       min_val <- reverse_vars$min_value[i]
       max_val <- reverse_vars$max_value[i]
       
       if (var %in% names(data)) {
+        # Sichere numerische Konvertierung (Factor → Character → Numeric)
+        var_numeric <- if (is.factor(data[[var]])) {
+          as.numeric(as.character(data[[var]]))
+        } else {
+          as.numeric(data[[var]])
+        }
+        
         # Reverse coding anwenden
-        data[[var]] <- (min_val + max_val) - as.numeric(data[[var]])
+        data[[var]] <- (min_val + max_val) - var_numeric
         
         # Dokumentation hinzufügen
         attr(data[[var]], "reverse_coded") <- TRUE
@@ -2901,8 +3095,8 @@ safe_apply_labels <- function(data, var_name, labels) {
         final_labels <- labels[valid_keys]
         names(final_labels) <- numeric_keys[valid_keys]
         
-        # Nur Labels für tatsächlich vorhandene Werte verwenden
-        existing_keys <- names(final_labels)[names(final_labels) %in% unique_vals]
+        # Nur Labels für tatsächlich vorhandene Werte verwenden (A041 Fix: as.character für Typ-Konsistenz)
+        existing_keys <- names(final_labels)[as.character(names(final_labels)) %in% as.character(unique_vals)]
         if (length(existing_keys) > 0) {
           final_labels <- final_labels[existing_keys]
           data[[var_name]] <- labelled::set_value_labels(var_data, final_labels)
@@ -2937,7 +3131,7 @@ create_numeric_versions <- function(data, config) {
   if (nrow(ordinal_vars) > 0) {
     cat("Erstelle numerische Versionen für ordinale Variablen:", nrow(ordinal_vars), "Variablen\n")
     
-    for (i in 1:nrow(ordinal_vars)) {
+    for (i in seq_len(nrow(ordinal_vars))) {
       var <- ordinal_vars$variable_name[i]
       
       if (var %in% names(data)) {
@@ -3016,19 +3210,10 @@ create_numeric_index_safe <- function(data_subset, index_name = "Index") {
     # Verwende nur erfolgreich konvertierte Spalten
     numeric_data_clean <- numeric_data[, numeric_success, drop = FALSE]
     
-    # Erstelle Index mit manueller rowMeans-Berechnung
-    index_values <- rep(NA, nrow(numeric_data_clean))
+    # Erstelle Index mit vektorisierter rowMeans-Berechnung
+    index_values <- rowMeans(numeric_data_clean, na.rm = TRUE)
     
-    for(i in 1:nrow(numeric_data_clean)) {
-      row_values <- as.numeric(numeric_data_clean[i, ])
-      valid_values <- row_values[!is.na(row_values)]
-      
-      if(length(valid_values) > 0) {
-        index_values[i] <- mean(valid_values)
-      }
-    }
-    
-    # Bereinige problematische Werte
+    # Zeilen ohne gültige Werte werden NA (rowMeans gibt NaN für alle-NA-Zeilen)
     index_values[is.nan(index_values) | is.infinite(index_values)] <- NA
     
     valid_count <- sum(!is.na(index_values))
@@ -3160,11 +3345,11 @@ convert_likert_to_numeric <- function(x) {
     str_detect(x, "^4.*eher") ~ 4,
     str_detect(x, "^5.*voll und ganz") ~ 5,
     str_detect(x, "Weiß nicht") ~ NA_real_,
-    str_detect(x, "^1") ~ 1,  # Fallback für einfachere Kodierungen
-    str_detect(x, "^2") ~ 2,
-    str_detect(x, "^3") ~ 3,
-    str_detect(x, "^4") ~ 4,
-    str_detect(x, "^5") ~ 5,
+    str_detect(x, "^1\\b") ~ 1,  # Fallback für einfachere Kodierungen (A042: \\b verhindert Match von "10")
+    str_detect(x, "^2\\b") ~ 2,
+    str_detect(x, "^3\\b") ~ 3,
+    str_detect(x, "^4\\b") ~ 4,
+    str_detect(x, "^5\\b") ~ 5,
     TRUE ~ NA_real_
   )
 }
@@ -3274,8 +3459,26 @@ create_survey_object <- function(data, weight_var) {
     return(NULL)
   }
   
+  # Gewichtungs-Validierung (A044 Fix)
+  weights_vec <- data[[weight_var]]
+  if (!is.numeric(weights_vec)) {
+    cat("  ⚠ Gewichtungsvariable ist nicht numerisch, Survey-Objekt wird nicht erstellt\n")
+    return(NULL)
+  }
+  if (any(is.na(weights_vec))) {
+    cat("  ⚠ Gewichtungsvariable enthält NA-Werte (", sum(is.na(weights_vec)), "von", length(weights_vec), ")\n")
+  }
+  if (any(weights_vec < 0, na.rm = TRUE)) {
+    cat("  ⚠ Gewichtungsvariable enthält negative Werte — diese werden auf 0 gesetzt\n")
+    weights_vec[weights_vec < 0 & !is.na(weights_vec)] <- 0
+  }
+  if (stats::var(weights_vec, na.rm = TRUE) == 0) {
+    cat("  ⚠ Gewichtungsvariable hat keine Varianz (alle Werte gleich) — Gewichtung hat keinen Effekt\n")
+  }
+  
   # Konvertiere zu data.frame (nicht tibble) für Survey-Kompatibilität
   survey_data <- as.data.frame(data)
+  survey_data[[weight_var]] <- weights_vec  # Aktualisiere mit bereinigten Gewichten
   
   # KEINE automatische Konvertierung von Factors zu Character mehr
   # Survey-Paket kann mit Factors umgehen
@@ -3305,7 +3508,11 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   data <- switch(file_ext,
                  "xlsx" = read_excel(DATA_FILE),
                  "csv" = read.csv(DATA_FILE, stringsAsFactors = FALSE),
-                 "rds" = readRDS(DATA_FILE),
+                 "rds" = {
+                   cat("⚠ WARNUNG: RDS-Dateien können beliebigen R-Code ausführen beim Laden.\n")
+                   cat("  Stellen Sie sicher, dass die Datei aus einer vertrauenswürdigen Quelle stammt.\n")
+                   readRDS(DATA_FILE)
+                 },
                  stop("Nicht unterstütztes Dateiformat. Unterstützt: .xlsx, .csv, .rds")
   )
   
@@ -3319,7 +3526,7 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
       label <- attr(x, "label")
       if (is.null(label)) "" else as.character(label)
     }),
-    Typ = sapply(data, function(x) paste(class(x), collapse = ", ")),
+    Typ = vapply(data, function(x) paste(class(x), collapse = ", "), character(1)),
     stringsAsFactors = FALSE
   )
   
@@ -3398,7 +3605,7 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   cat("\nErgänze automatische Labels für dichotome Variablen...\n")
   dichotomous_count <- 0
   
-  for (i in 1:nrow(codebook_df)) {
+  for (i in seq_len(nrow(codebook_df))) {
     # Nur wenn keine Labels vorhanden sind
     if (codebook_df$Wertelabels[i] == "keine") {
       var_name <- codebook_df$Variable[i]
@@ -3433,18 +3640,21 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
           }
           # Pattern 3: 1/2
           else if (all(sorted_vals %in% c("1", "2"))) {
+            # A100 Fix: Warnung bei hartcodierten Annahmen
+            cat("    ⚠ Hinweis: Annahme '1=Ja, 2=Nein' für Variable '", codebook_df$Variable[i], "' — bitte in Config überprüfen\n")
             codebook_df$Wertelabels[i] <- "1 = Ja; 2 = Nein"
             dichotomous_count <- dichotomous_count + 1
           }
           # Pattern 4: 0/1
           else if (all(sorted_vals %in% c("0", "1"))) {
+            cat("    ⚠ Hinweis: Annahme '0=Nein, 1=Ja' für Variable '", codebook_df$Variable[i], "' — bitte in Config überprüfen\n")
             codebook_df$Wertelabels[i] <- "0 = Nein; 1 = Ja"
             dichotomous_count <- dichotomous_count + 1
           }
         }
       }, error = function(e) {
-        # Stille Fehlerbehandlung - überspringe problematische Variablen
-        # (z.B. Datumsvariablen, komplexe Typen)
+        # A051 Fix: Stille Fehlerbehandlung → Warnung ausgeben
+        warning("Überspringe Variable '", codebook_df$Variable[i], "': ", e$message)
       })
     }
   }
@@ -3464,7 +3674,13 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   
   # Optional: Speichere Codebook auch als Datei für Dokumentation
   if (exists("SAVE_CODEBOOK") && SAVE_CODEBOOK) {
-    codebook_file <- file.path(dirname(OUTPUT_FILE), "codebook_cache.rds")
+    # A048 Fix: Validiere OUTPUT_FILE vor dirname()
+    output_dir <- if (exists("OUTPUT_FILE") && !is.null(OUTPUT_FILE) && OUTPUT_FILE != "") {
+      dirname(OUTPUT_FILE)
+    } else {
+      getwd()
+    }
+    codebook_file <- file.path(output_dir, "codebook_cache.rds")
     saveRDS(codebook_df, codebook_file)
     cat("  Codebook auch gespeichert als:", codebook_file, "\n")
   }
@@ -3473,7 +3689,10 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   cat("\nKonvertiere haven_labelled Variablen...\n")
   haven_vars <- sapply(data, function(x) inherits(x, "haven_labelled"))
   if (any(haven_vars)) {
-    library(haven)
+    # A045 Fix: requireNamespace statt library() (modifiziert nicht den search path)
+    if (!requireNamespace("haven", quietly = TRUE)) {
+      stop("Package 'haven' wird benötigt für die Konvertierung von haven_labelled Variablen")
+    }
     # Konvertierung zu character (Labels sind bereits im Codebook gesichert!)
     data <- data %>%
       mutate(across(where(~inherits(., "haven_labelled")), as.character))
@@ -3498,7 +3717,8 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   config <- index_result$config
   
   # 5. CUSTOM VARIABLES ERSTELLEN (jetzt können sie auf Indices zugreifen)
-  if (exists("add_custom_vars") && is.function(add_custom_vars)) {
+  # A046 Fix: envir = .GlobalEnv explizit angegeben
+  if (exists("add_custom_vars", envir = .GlobalEnv) && is.function(get("add_custom_vars", envir = .GlobalEnv))) {
     cat("Erstelle Custom-Variablen...\n")
     data <- add_custom_vars(data)
     cat("✅ Custom-Variablen erfolgreich erstellt\n")
@@ -3515,9 +3735,10 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
     WEIGHT_VAR_SANITIZED <- make.names(WEIGHT_VAR)
     if (!WEIGHT_VAR_SANITIZED %in% names(data)) {
       warning(paste("Gewichtungsvariable", WEIGHT_VAR, "nicht gefunden. Analysen werden ungewichtet durchgeführt."))
-      WEIGHTS <<- FALSE
+      # A008 Fix: Explizites assign statt <<- 
+      assign("WEIGHTS", FALSE, envir = .GlobalEnv)
     } else {
-      WEIGHT_VAR <<- WEIGHT_VAR_SANITIZED
+      assign("WEIGHT_VAR", WEIGHT_VAR_SANITIZED, envir = .GlobalEnv)
     }
   }
   
@@ -3529,7 +3750,7 @@ load_and_prepare_data <- function(config, index_definitions = list(), custom_var
   # Hier nur ergänzen für neue Variablen (Custom Variables, Indices)
   cat("Aktualisiere globales Codebook für neue Variablen...\n")
   if (exists("global_codebook", envir = .GlobalEnv)) {
-    existing_codebook <- get("global_codebook", envir = .GlobalEnv)
+    existing_codebook <- get_global_codebook()
     existing_vars <- existing_codebook$Variable
     new_vars <- setdiff(names(data), existing_vars)
     
@@ -3606,7 +3827,7 @@ create_descriptive_tables <- function(prepared_data) {
   results <- list()
   
   # Für jede Variable entsprechende Tabelle erstellen
-  for (i in 1:nrow(config$variablen)) {
+  for (i in seq_len(nrow(config$variablen))) {
     var_name <- config$variablen$variable_name[i]
     var_type <- config$variablen$data_type[i]
     question_text <- config$variablen$question_text[i]
@@ -3630,7 +3851,7 @@ create_descriptive_tables <- function(prepared_data) {
       if (filter_applied) {
         cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
             filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
-            round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+            round(if (!is.null(filter_info$original_n) && filter_info$original_n > 0) filter_info$filtered_n/filter_info$original_n*100 else 0, 1), "%)\n", sep = "")
       }
     }
     
@@ -3644,7 +3865,16 @@ create_descriptive_tables <- function(prepared_data) {
                "nominal" = create_nominal_text_table(current_data, var_name, question_text, use_na, category_info, current_survey_obj),
                "ordinal" = create_ordinal_table(current_data, config$variablen[i,], use_na, current_survey_obj),
                "dichotom" = create_dichotom_table(current_data, config$variablen[i,], use_na, current_survey_obj),
-               "matrix" = create_matrix_table(current_data, config$variablen[i,], use_na, current_survey_obj)
+               "matrix" = create_matrix_table(current_data, config$variablen[i,], use_na, current_survey_obj),
+               {
+                 # Default: Unbekannter Variablentyp (A049 Fix)
+                 cat("WARNUNG: Unbekannter data_type '", var_type, "' für Variable '", var_name, "'\n")
+                 list(type = "error", variable = var_name, 
+                      question = question_text,
+                      error_message = paste("Unbekannter Variablentyp:", var_type),
+                      error_class = "unknown_type",
+                      error_trace = "")
+               }
         )
       } else if (config$variablen$data_type[i] == "matrix") {
         # Matrix-Variable behandeln
@@ -3657,7 +3887,7 @@ create_descriptive_tables <- function(prepared_data) {
       error_msg <- tryCatch({
         # Versuche Error-Message zu einem String zu konvertieren
         error_text <- paste(e$message, collapse = " | ")
-        if (length(error_text) > 500) {
+        if (nchar(error_text) > 500) {
           substr(error_text, 1, 500)
         } else {
           error_text
@@ -3699,7 +3929,7 @@ create_descriptive_tables <- function(prepared_data) {
     
     # Filter-Info zum Ergebnis hinzufügen (falls Filter angewendet)
     if (!is.null(result)) {
-      if (result$type == "error") {
+      if (!is.null(result) && "type" %in% names(result) && identical(result$type, "error")) {
         # Error-Objekt speichern
         results[[var_name]] <- result
       } else if (filter_applied) {
@@ -3729,7 +3959,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
   }
   
   # Statistiken berechnen
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete Statistiken mit Fehlerbehandlung
     if (!use_na) {
       survey_obj_filtered <- subset(survey_obj, !is.na(get(var_name)))
@@ -3738,15 +3968,19 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     }
     
     stats <- tryCatch({
+      # Konsolidierte svyquantile-Aufrufe: 1 statt 5 (A055 Fix)
+      quantiles <- svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 
+                               c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE)[[1]]
+      
       list(
         n = nrow(survey_obj_filtered$variables),
-        mean = as.numeric(svymean(as.formula(paste("~", var_name)), survey_obj_filtered, na.rm = !use_na))[[1]],
-        median = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0.5, na.rm = !use_na)[[1]][1]),
-        q1 = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0.25, na.rm = !use_na)[[1]][1]),
-        q3 = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0.75, na.rm = !use_na)[[1]][1]),
-        min = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 0, na.rm = !use_na)[[1]][1]),
-        max = as.numeric(svyquantile(as.formula(paste("~", var_name)), survey_obj_filtered, 1, na.rm = !use_na)[[1]][1]),
-        sd = as.numeric(sqrt(svyvar(as.formula(paste("~", var_name)), survey_obj_filtered, na.rm = !use_na)))
+        mean = as.numeric(svymean(as.formula(paste("~", var_name)), survey_obj_filtered, na.rm = TRUE))[[1]],
+        min = as.numeric(quantiles[1]),
+        q1 = as.numeric(quantiles[2]),
+        median = as.numeric(quantiles[3]),
+        q3 = as.numeric(quantiles[4]),
+        max = as.numeric(quantiles[5]),
+        sd = as.numeric(sqrt(svyvar(as.formula(paste("~", var_name)), survey_obj_filtered, na.rm = TRUE)))
       )
     }, error = function(e) {
       cat("FALLBACK: Gewichtete Statistiken für", var_name, "fehlgeschlagen:", e$message, "\n")
@@ -3821,7 +4055,7 @@ create_numeric_table <- function(data, var_name, question_text, use_na, survey_o
     question = question_text,
     variable_label = get_variable_label(var_name, label_type = "short"),
     type = "numeric",
-    weighted = !is.null(survey_obj) && WEIGHTS
+    weighted = weights_enabled(survey_obj)
   ))
 }
 
@@ -3848,7 +4082,7 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
   
   
   # Häufigkeiten berechnen
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete Häufigkeiten
     if (!use_na) {
       survey_obj_filtered <- subset(survey_obj, !is.na(get(var_name)))
@@ -3872,8 +4106,9 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
     )
   }
   
-  # Relative Häufigkeiten
-  freq_df$Haeufigkeit_relativ <- round(freq_df$Haeufigkeit_absolut / sum(freq_df$Haeufigkeit_absolut) * 100, DIGITS_ROUND)
+  # Relative Häufigkeiten (mit Guard gegen Division durch Null)
+  total_freq <- sum(freq_df$Haeufigkeit_absolut)
+  freq_df$Haeufigkeit_relativ <- if (total_freq > 0) round(freq_df$Haeufigkeit_absolut / total_freq * 100, DIGITS_ROUND) else 0
   
   # Labels hinzufügen - VERBESSERT
   if (!is.null(labels) && length(labels) > 0) {
@@ -3924,7 +4159,7 @@ create_nominal_coded_table <- function(data, var_config, use_na, survey_obj = NU
     question = question_text,
     variable_label = get_variable_label(var_name, label_type = "short"),
     type = "nominal_coded",
-    weighted = !is.null(survey_obj) && WEIGHTS
+    weighted = weights_enabled(survey_obj)
   ))
 }
 
@@ -3938,7 +4173,7 @@ create_nominal_text_table <- function(data, var_name, question_text, use_na, cat
   }
   
   # Häufigkeiten berechnen
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete Häufigkeiten
     if (!use_na) {
       survey_obj_filtered <- subset(survey_obj, !is.na(get(var_name)))
@@ -3982,8 +4217,9 @@ create_nominal_text_table <- function(data, var_name, question_text, use_na, cat
     names(freq_df)[2] <- "Kategorie_mit_Label"
   }
   
-  # Relative Häufigkeiten
-  freq_df$Haeufigkeit_relativ <- round(freq_df$Haeufigkeit_absolut / sum(freq_df$Haeufigkeit_absolut) * 100, DIGITS_ROUND)
+  # Relative Häufigkeiten (mit Guard gegen Division durch Null)
+  total_freq <- sum(freq_df$Haeufigkeit_absolut)
+  freq_df$Haeufigkeit_relativ <- if (total_freq > 0) round(freq_df$Haeufigkeit_absolut / total_freq * 100, DIGITS_ROUND) else 0
   
   # Kurze Versionen für bessere Darstellung (nur wenn keine Labels vorhanden)
   if (!"Kategorie_mit_Label" %in% names(freq_df)) {
@@ -3999,7 +4235,7 @@ create_nominal_text_table <- function(data, var_name, question_text, use_na, cat
     question = question_text,
     variable_label = get_variable_label(var_name, label_type = "short"),
     type = "nominal_text",
-    weighted = !is.null(survey_obj) && WEIGHTS
+    weighted = weights_enabled(survey_obj)
   ))
 }
 
@@ -4039,7 +4275,7 @@ create_ordinal_table <- function(data, var_config, use_na, survey_obj = NULL) {
         question = question_text,
         variable_label = get_variable_label(var_name, label_type = "short"),
         type = "ordinal",
-        weighted = !is.null(survey_obj) && WEIGHTS
+        weighted = weights_enabled(survey_obj)
       ))
     }
     
@@ -4089,7 +4325,7 @@ create_dichotom_table <- function(data, var_config, use_na, survey_obj = NULL) {
         question = question_text,
         variable_label = get_variable_label(var_name, label_type = "short"),
         type = "dichotom",
-        weighted = !is.null(survey_obj) && WEIGHTS
+        weighted = weights_enabled(survey_obj)
       ))
     }
     
@@ -4135,11 +4371,14 @@ find_matrix_items <- function(matrix_name, data) {
   actual_name <- matrix_name
   
   for (test_name in possible_names) {
+    # A053 Fix: Escape regex metacharacters via escape_regex() helper
+    test_name_escaped <- escape_regex(test_name)
+    
     patterns <- c(
-      paste0("^", test_name, "\\[.+\\]$"),     # ZS01[001]
-      paste0("^", test_name, "\\..+\\.$"),     # ZS01.001.
-      paste0("^", test_name, "_.+$"),          # ZS01_001
-      paste0("^", test_name, "-.+$")           # ZS01-001
+      paste0("^", test_name_escaped, "\\[.+\\]$"),     # ZS01[001]
+      paste0("^", test_name_escaped, "\\..+\\.$"),     # ZS01.001.
+      paste0("^", test_name_escaped, "_.+$"),          # ZS01_001
+      paste0("^", test_name_escaped, "-.+$")           # ZS01-001
     )
     
     found_vars <- c()
@@ -4439,7 +4678,9 @@ map_response_labels <- function(unique_responses, labels, verbose = TRUE) {
         response_char,                           # "AO01"
         paste0("AO", numeric_code),              # "AO1"
         numeric_code,                            # "1"
-        sprintf("%02d", as.numeric(numeric_code)) # "01"
+        # A096 Fix: NA-Validierung vor sprintf
+        if (!is.na(numeric_code) && !is.na(suppressWarnings(as.numeric(numeric_code)))) 
+          sprintf("%02d", as.numeric(numeric_code)) else NA_character_  # "01"
       )
       
       for (candidate in candidates) {
@@ -4914,7 +5155,7 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
   }
   
   # *** GEÄNDERT: Survey-Objekt für Gewichtung verwenden ***
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete Analyse: Survey-Objekt mit aktuellen Daten neu erstellen
     survey_obj_current <- create_survey_object(data, WEIGHT_VAR)
     cat("Verwende gewichtete Matrix-Kreuztabelle\n")
@@ -4934,7 +5175,7 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
       
       if (nrow(group_data) > 0) {
         # *** GEÄNDERT: Gewichtete vs. ungewichtete Häufigkeiten ***
-        if (!is.null(survey_obj) && WEIGHTS) {
+        if (weights_enabled(survey_obj)) {
           # Gewichtete Häufigkeiten - mit pairwise Filterung
           group_survey <- subset(survey_obj_current, get(group_var) == group & !is.na(get(group_var)) & !is.na(get(var)))
           
@@ -4969,7 +5210,6 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
           
           # Spaltenname mit Label
           response_label <- response_labels[as.character(response)]
-          clean_response <- make_clean_colname(response_label) 
           clean_response <- make_clean_colname(response_label)
           col_name <- paste0(group, "_", clean_response)
           
@@ -4994,7 +5234,7 @@ create_matrix_categorical_crosstab <- function(data, matrix_vars, group_var, uni
     result_rows <- lapply(result_rows, function(df) {
       missing_cols <- setdiff(all_colnames, names(df))
       for (col in missing_cols) {
-        df[[col]] <- 0  # Default value for missing columns
+        df[[col]] <- NA  # A058 Fix: NA statt 0 für fehlende Kombinationen
       }
       # Reorder columns to match
       df[all_colnames]
@@ -5327,7 +5567,7 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
       
       # Erstelle kategoriale Kreuztabelle (ohne numerische Konvertierung)
       # Verwende die Display-Variablen (mit Labels)
-      if (!is.null(survey_obj) && WEIGHTS) {
+      if (weights_enabled(survey_obj)) {
         survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
         crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
       } else {
@@ -5399,7 +5639,7 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
       cat("→ Variable ist ordinal - erstelle kategoriale Kreuztabelle\n")
       
       # Erstelle kategoriale Kreuztabelle
-      if (!is.null(survey_obj) && WEIGHTS) {
+      if (weights_enabled(survey_obj)) {
         survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
         crosstab <- svytable(as.formula(paste("~", var1_display, "+", var2_display)), survey_complete)
       } else {
@@ -5461,7 +5701,7 @@ create_contingency_table <- function(data, var1, var2, survey_obj = NULL, config
   # Standard Kreuztabelle für kategoriale Variablen
   cat("→ Erstelle Standard-Kreuztabelle mit Labels\n")
   
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Survey-Objekt für complete_data neu erstellen
     survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
     
@@ -5663,10 +5903,10 @@ convert_factor_to_numeric_safe <- function(factor_var, var_name, config = NULL) 
   
   # *** STRATEGIE 1: Verwende global_codebook und Config für intelligente Konvertierung ***
   if (exists("global_codebook", envir = .GlobalEnv)) {
-    codebook <- get("global_codebook", envir = .GlobalEnv)
+    codebook <- get_global_codebook()
     
     if (var_name %in% codebook$Variable) {
-      wertelabels_str <- codebook$Wertelabels[codebook$Variable == var_name]
+      wertelabels_str <- codebook$Wertelabels[codebook$Variable == var_name][1]
       
       if (!is.na(wertelabels_str) && wertelabels_str != "keine") {
         cat("    → Verwende global_codebook für", var_name, "\n")
@@ -5751,8 +5991,9 @@ convert_factor_to_numeric_safe <- function(factor_var, var_name, config = NULL) 
     cat("    → Konvertierung über numerische Levels erfolgreich\n")
     return(result)
   } else {
-    result <- as.numeric(factor_var)
-    cat("    → Konvertierung über Level-Position erfolgreich\n")
+    # Fallback: Verwende as.character() statt Integer-Codes, um Datenkorruption zu vermeiden
+    result <- suppressWarnings(as.numeric(as.character(factor_var)))
+    cat("    → Konvertierung über as.character() Fallback\n")
     return(result)
   }
 }
@@ -5860,7 +6101,7 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   cat("  ✓ Validierung erfolgreich:", length(unique_groups), "Gruppen mit", sum(complete_cases), "vollständigen Fällen\n")
   
   # NEUER FIX: Survey-Objekt mit konvertierten Daten neu erstellen falls nötig
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     cat("Erstelle Survey-Objekt mit konvertierten Daten...\n")
     
     # WICHTIG: Konvertiere zu data.frame vor Survey-Objekt-Erstellung
@@ -5882,66 +6123,27 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
       group_survey <- subset(survey_complete, get(group_var) == group)
       
       if (nrow(group_survey$variables) > 0) {
-        # Sichere Extraktion aller Survey-Statistiken
+        # Sichere Extraktion aller Survey-Statistiken (A055: konsolidiert)
         tryCatch({
           mean_result <- svymean(as.formula(paste("~", numeric_var)), group_survey, na.rm = TRUE)
-          median_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.5, na.rm = TRUE)
-          q1_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.25, na.rm = TRUE)
-          q3_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0.75, na.rm = TRUE)
-          min_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 0, na.rm = TRUE)
-          max_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 1, na.rm = TRUE)
+          # Konsolidierter svyquantile-Aufruf: 1 statt 5 separate Aufrufe
+          quant_result <- svyquantile(as.formula(paste("~", numeric_var)), group_survey, 
+                                       c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE)
           var_result <- svyvar(as.formula(paste("~", numeric_var)), group_survey, na.rm = TRUE)
           
-          # *** FIX: Proper extraction from survey objects using coef() ***
+          # Extraktion aus konsolidiertem Quantil-Ergebnis
+          q_extract <- suppressWarnings({
+            q_matrix <- quant_result[[numeric_var]]
+            if (is.matrix(q_matrix)) as.numeric(q_matrix[, 1]) else as.numeric(q_matrix)
+          })
+          
           mean_val <- suppressWarnings(as.numeric(coef(mean_result)))
           if (is.na(mean_val)) mean_val <- NA
-          
-          # For quantiles, extract from matrix properly
-          median_val <- suppressWarnings({
-            if (is.matrix(median_result[[numeric_var]])) {
-              as.numeric(median_result[[numeric_var]][1, 1])
-            } else {
-              as.numeric(median_result[[numeric_var]])
-            }
-          })
-          if (is.na(median_val)) median_val <- NA
-          
-          q1_val <- suppressWarnings({
-            if (is.matrix(q1_result[[numeric_var]])) {
-              as.numeric(q1_result[[numeric_var]][1, 1])
-            } else {
-              as.numeric(q1_result[[numeric_var]])
-            }
-          })
-          if (is.na(q1_val)) q1_val <- NA
-          
-          q3_val <- suppressWarnings({
-            if (is.matrix(q3_result[[numeric_var]])) {
-              as.numeric(q3_result[[numeric_var]][1, 1])
-            } else {
-              as.numeric(q3_result[[numeric_var]])
-            }
-          })
-          if (is.na(q3_val)) q3_val <- NA
-          
-          min_val <- suppressWarnings({
-            if (is.matrix(min_result[[numeric_var]])) {
-              as.numeric(min_result[[numeric_var]][1, 1])
-            } else {
-              as.numeric(min_result[[numeric_var]])
-            }
-          })
-          if (is.na(min_val)) min_val <- NA
-          
-          max_val <- suppressWarnings({
-            if (is.matrix(max_result[[numeric_var]])) {
-              as.numeric(max_result[[numeric_var]][1, 1])
-            } else {
-              as.numeric(max_result[[numeric_var]])
-            }
-          })
-          if (is.na(max_val)) max_val <- NA
-          
+          min_val <- if (length(q_extract) >= 1) q_extract[1] else NA
+          q1_val <- if (length(q_extract) >= 2) q_extract[2] else NA
+          median_val <- if (length(q_extract) >= 3) q_extract[3] else NA
+          q3_val <- if (length(q_extract) >= 4) q_extract[4] else NA
+          max_val <- if (length(q_extract) >= 5) q_extract[5] else NA
           sd_val <- suppressWarnings(as.numeric(sqrt(coef(var_result))))
           if (is.na(sd_val)) sd_val <- NA
           
@@ -6051,7 +6253,7 @@ create_group_means_table <- function(data, numeric_var, group_var, survey_obj = 
   }
   
   # Gesamtstatistiken hinzufügen
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Sichere Extraktion von Survey-Statistiken mit Fehlerbehandlung
     tryCatch({
       total_mean <- svymean(as.formula(paste("~", numeric_var)), survey_complete, na.rm = TRUE)
@@ -6182,7 +6384,7 @@ create_crosstabs <- function(prepared_data) {
   }
   
   # Für jede konfigurierte Kreuztabelle
-  for (i in 1:nrow(config$kreuztabellen)) {
+  for (i in seq_len(nrow(config$kreuztabellen))) {
     analysis_name <- config$kreuztabellen$analysis_name[i]
     var1 <- config$kreuztabellen$variable_1[i]
     var2 <- config$kreuztabellen$variable_2[i]
@@ -6203,7 +6405,7 @@ create_crosstabs <- function(prepared_data) {
       if (filter_applied) {
         cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
             filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
-            round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+            round(if (!is.null(filter_info$original_n) && filter_info$original_n > 0) filter_info$filtered_n/filter_info$original_n*100 else 0, 1), "%)\n", sep = "")
       }
     } else if (!filter_applied) {
       # Kein Filter angewendet: globales Survey-Objekt verwenden (falls vorhanden)
@@ -6429,7 +6631,7 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
   }
   
   # NEUE VALIDIERUNG: Factor-Operationen vermeiden
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Prüfe ob Variablen für Survey-Operationen geeignet sind
     if ((is.factor(complete_data[[var1]]) && test_type %in% c("correlation", "t_test", "anova")) ||
         (is.factor(complete_data[[var2]]) && test_type %in% c("correlation", "t_test", "anova"))) {
@@ -6449,8 +6651,13 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
   }
   
   # Variable types bestimmen
-  var1_config <- config$variablen[config$variablen$variable_name == var1, ]
-  var2_config <- config$variablen[config$variablen$variable_name == var2, ]
+  if (!is.null(config) && "variablen" %in% names(config)) {
+    var1_config <- config$variablen[config$variablen$variable_name == var1, ]
+    var2_config <- config$variablen[config$variablen$variable_name == var2, ]
+  } else {
+    var1_config <- data.frame()
+    var2_config <- data.frame()
+  }
   
   var1_type <- if(nrow(var1_config) > 0) var1_config$data_type else "unknown"
   var2_type <- if(nrow(var2_config) > 0) var2_config$data_type else "unknown"
@@ -6486,7 +6693,7 @@ perform_statistical_test <- function(data, var1, var2, test_type, survey_obj = N
 }
 # Chi-Quadrat Test
 perform_chi_square_test <- function(data, var1, var2, survey_obj = NULL) {
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichteter Chi-Quadrat Test mit survey package
     survey_complete <- subset(survey_obj, !is.na(get(var1)) & !is.na(get(var2)))
     test_result <- svychisq(as.formula(paste("~", var1, "+", var2)), survey_complete)
@@ -6519,7 +6726,7 @@ perform_chi_square_test <- function(data, var1, var2, survey_obj = NULL) {
       })
     }, warning = function(w) {
       cat("  ⚠ Chi-Quadrat-Test für", var1, "×", var2, ":", w$message, "\n")
-      chisq.test(contingency_table)
+      suppressWarnings(chisq.test(contingency_table))
     })
     
     return(list(
@@ -6572,7 +6779,7 @@ perform_t_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_o
   }
   
   # Rest wie vorher...
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichteter T-Test mit bereinigten Daten
     survey_complete <- subset(survey_obj, !is.na(get(numeric_var)) & !is.na(get(group_var)))
     
@@ -6604,7 +6811,7 @@ perform_t_test_safe <- function(data, var1, var2, var1_type, var2_type, survey_o
     test_result <- t.test(group1_data, group2_data)
     
     return(list(
-      test = "t-Test",
+      test = "Welch's t-Test",
       statistic = round(test_result$statistic, DIGITS_ROUND),
       p_value = round(test_result$p.value, 4),
       df = round(test_result$parameter, 1),
@@ -6654,6 +6861,7 @@ perform_anova_test_safe <- function(data, var1, var2, var1_type, var2_type, surv
   }
   
   # UNGEWICHTETE ANOVA (vermeidet Survey-Factor-Probleme)
+  # Bei gewichteten Daten wird svyglm verwendet, sonst Standard ANOVA
   tryCatch({
     formula_str <- paste(numeric_var, "~", group_var)
     
@@ -6662,6 +6870,35 @@ perform_anova_test_safe <- function(data, var1, var2, var1_type, var2_type, surv
       complete_data[[group_var]] <- as.factor(as.character(complete_data[[group_var]]))
     }
     
+    # Gewichtete ANOVA via svyglm falls Survey-Objekt verfügbar
+    if (weights_enabled(survey_obj)) {
+      cat("  → Gewichtete ANOVA via svyglm\n")
+      
+      # Survey-Objekt mit bereinigten Daten neu erstellen
+      survey_complete <- create_survey_object(complete_data, WEIGHT_VAR)
+      
+      model <- svyglm(as.formula(formula_str), survey_complete)
+      anova_result <- anova(model)
+      
+      # Spaltennamen dynamisch ermitteln (svyglm anova hat andere Struktur als aov)
+      anova_cols <- names(anova_result)
+      f_col <- grep("^F$|^F value$", anova_cols, value = TRUE)[1]
+      p_col <- grep("^p$|^Pr\\(>F\\)$|^Pr\\(>Chisq\\)$", anova_cols, value = TRUE)[1]
+      
+      f_value <- if (!is.na(f_col)) anova_result[[f_col]][1] else NA
+      p_value <- if (!is.na(p_col)) anova_result[[p_col]][1] else NA
+      df_str <- if ("Df" %in% anova_cols) paste(anova_result$Df[1], anova_result$Df[2], sep = ", ") else "NA"
+      
+      return(list(
+        test = "ANOVA (gewichtet via svyglm)",
+        statistic = if(!is.na(f_value)) round(f_value, DIGITS_ROUND) else NA,
+        p_value = if(!is.na(p_value)) round(p_value, 4) else NA,
+        df = df_str,
+        result = if(!is.na(p_value) && p_value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant"
+      ))
+    }
+    
+    # Standard ungewichtete ANOVA
     test_result <- aov(as.formula(formula_str), data = complete_data)
     summary_result <- summary(test_result)
     
@@ -6693,7 +6930,6 @@ perform_anova_test_safe <- function(data, var1, var2, var1_type, var2_type, surv
       df = df_str,
       result = if(!is.na(p_value) && p_value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant"
     ))
-    
   }, error = function(e) {
     return(list(
       test = "ANOVA",
@@ -6754,7 +6990,7 @@ perform_correlation_test <- function(data, var1, var2, survey_obj = NULL) {
 # 1. Pearson-Korrelation für numerische Variablen
 perform_pearson_correlation <- function(data, var1, var2, survey_obj = NULL) {
   
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete Korrelation - VERBESSERTE FEHLERBEHANDLUNG
     survey_complete <- subset(survey_obj, !is.na(get(var1)) & !is.na(get(var2)))
     
@@ -6840,14 +7076,14 @@ perform_pearson_correlation <- function(data, var1, var2, survey_obj = NULL) {
 perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
   
   tryCatch({
-    if (!is.null(survey_obj) && WEIGHTS) {
+    if (weights_enabled(survey_obj)) {
       # Gewichtetes Cramér's V
       survey_complete <- subset(survey_obj, !is.na(get(var1)) & !is.na(get(var2)))
-      chi2_result <- svychisq(as.formula(paste("~", var1, "+", var2)), survey_complete)
+      chi2_result <- svychisq(safe_formula("~", var1, "+", var2), survey_complete)
       
       # Cramér's V berechnen
       chi2_stat <- chi2_result$statistic
-      n <- sum(svytable(as.formula(paste("~", var1, "+", var2)), survey_complete))
+      n <- sum(svytable(safe_formula("~", var1, "+", var2), survey_complete))
       
     } else {
       # Ungewichtetes Cramér's V
@@ -6878,6 +7114,18 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
     
     # Cramér's V = sqrt(Chi²/ (n * (min(r,c) - 1)))
     min_dim <- min(length(unique(data[[var1]])), length(unique(data[[var2]]))) - 1
+    
+    # Guard gegen Division durch Null (Variable mit nur 1 Ausprägung)
+    if (min_dim <= 0 || n <= 0) {
+      return(list(
+        test = "Cramér's V (nominaler Zusammenhang)",
+        statistic = NA,
+        p_value = NA,
+        result = "Nicht berechenbar (Variable hat nur eine Ausprägung)",
+        interpretation = "Nicht anwendbar"
+      ))
+    }
+    
     cramers_v <- sqrt(chi2_stat / (n * min_dim))
     
     return(list(
@@ -6898,11 +7146,11 @@ perform_cramers_v <- function(data, var1, var2, survey_obj = NULL) {
   })
 }
 
-# 3. Eta²für numerisch öÃ¢â‚¬â€ nominal
+# 3. Eta² für numerisch — nominal (encoding fix)
 perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NULL) {
   
   tryCatch({
-    if (!is.null(survey_obj) && WEIGHTS) {
+    if (weights_enabled(survey_obj)) {
       # Gewichtetes Eta²
       survey_complete <- subset(survey_obj, !is.na(get(numeric_var)) & !is.na(get(nominal_var)))
       
@@ -6910,12 +7158,19 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
       anova_model <- svyglm(as.formula(paste(numeric_var, "~", nominal_var)), survey_complete)
       anova_result <- anova(anova_model)
       
-      # Eta²= SS_between / SS_total
-      ss_between <- anova_result$`Sum Sq`[1]
-      ss_total <- sum(anova_result$`Sum Sq`, na.rm = TRUE)
-      eta_squared <- ss_between / ss_total
+      # Spaltennamen dynamisch ermitteln (svyglm anova kann andere Struktur haben als aov)
+      anova_cols <- names(anova_result)
+      ss_col <- grep("Sum Sq|sumsq|SS", anova_cols, value = TRUE)[1]
+      p_col <- grep("^p$|Pr\\(>F\\)|Pr\\(>Chisq\\)", anova_cols, value = TRUE)[1]
       
-      p_value <- anova_result$`Pr(>F)`[1]
+      if (is.na(ss_col)) stop("Konnte 'Sum Sq' Spalte in ANOVA-Output nicht finden. Verfügbare Spalten: ", paste(anova_cols, collapse = ", "))
+      
+      # Eta² = SS_between / SS_total
+      ss_between <- anova_result[[ss_col]][1]
+      ss_total <- sum(anova_result[[ss_col]], na.rm = TRUE)
+      eta_squared <- if (ss_total > 0) ss_between / ss_total else NA
+      
+      p_value <- if (!is.na(p_col)) anova_result[[p_col]][1] else NA
       
     } else {
       # Ungewichtetes Eta²
@@ -6949,7 +7204,7 @@ perform_eta_squared <- function(data, numeric_var, nominal_var, survey_obj = NUL
   })
 }
 
-# Interpretationshilfen
+# Interpretationshilfen (Schwellenwerte nach Cohen, 1988)
 interpret_correlation <- function(r) {
   r_abs <- abs(r)
   if (r_abs < 0.1) return("Sehr schwacher Zusammenhang")
@@ -7000,14 +7255,28 @@ perform_mann_whitney_test <- function(data, var1, var2, var1_type, var2_type) {
   group1_data <- group1_data[!is.na(group1_data)]
   group2_data <- group2_data[!is.na(group2_data)]
   
-  test_result <- wilcox.test(group1_data, group2_data)
+  # Stichprobengröße prüfen
+  if (length(group1_data) < 1 || length(group2_data) < 1) {
+    return(list(test = "Mann-Whitney-U", result = "Zu wenige Daten in mindestens einer Gruppe (mindestens 1 erforderlich)", p_value = NA, statistic = NA))
+  }
   
-  return(list(
-    test = "Mann-Whitney-U",
-    statistic = round(test_result$statistic, DIGITS_ROUND),
-    p_value = round(test_result$p.value, 4),
-    result = if(test_result$p.value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant"
-  ))
+  tryCatch({
+    test_result <- wilcox.test(group1_data, group2_data)
+    
+    return(list(
+      test = "Mann-Whitney-U",
+      statistic = round(test_result$statistic, DIGITS_ROUND),
+      p_value = round(test_result$p.value, 4),
+      result = if(test_result$p.value < ALPHA_LEVEL) "Signifikant" else "Nicht signifikant"
+    ))
+  }, error = function(e) {
+    return(list(
+      test = "Mann-Whitney-U",
+      result = paste("Fehler:", e$message),
+      p_value = NA,
+      statistic = NA
+    ))
+  })
 }
 
 # =============================================================================
@@ -7035,7 +7304,7 @@ run_regressions <- function(prepared_data) {
   }
   
   # Für jede konfigurierte Regression
-  for (i in 1:nrow(config$regressionen)) {
+  for (i in seq_len(nrow(config$regressionen))) {
     regression_name <- config$regressionen$regression_name[i]
     dependent_var <- config$regressionen$dependent_var[i]
     independent_vars <- str_split(config$regressionen$independent_vars[i], ";")[[1]]
@@ -7058,7 +7327,7 @@ run_regressions <- function(prepared_data) {
       if (filter_applied) {
         cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
             filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
-            round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+            round(if (!is.null(filter_info$original_n) && filter_info$original_n > 0) filter_info$filtered_n/filter_info$original_n*100 else 0, 1), "%)\n", sep = "")
       }
     } else if (!filter_applied) {
       # Kein Filter angewendet: globales Survey-Objekt verwenden (falls vorhanden)
@@ -7135,7 +7404,7 @@ is_ordinal_or_likert <- function(var_name, config, data = NULL) {
   )
   
   # Füge custom Marker hinzu (falls definiert)
-  if (exists("LIKERT_MARKERS_CUSTOM")) {
+  if (exists("LIKERT_MARKERS_CUSTOM", envir = .GlobalEnv)) {
     likert_markers <- c(likert_markers, LIKERT_MARKERS_CUSTOM)
   }
   
@@ -7293,7 +7562,7 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
   }
   
   # 4. VOLLSTÄNDIGE FÄLLE ERMITTELN (GEÄNDERT FÜR INTERAKTIONSTERME)
-  tryCatch({
+  extraction_result <- tryCatch({
     # NEUE LOGIK: Extrahiere alle Variablen aus Interaktionstermen
     all_individual_vars <- c(dependent_var)
     
@@ -7324,10 +7593,12 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
     
     if (nrow(complete_data) < 10) {
       cat("WARNUNG: Zu wenige vollständige Fälle (", nrow(complete_data), ") für Regression\n")
-      return(NULL)
+      list(success = FALSE, error = "Zu wenige vollständige Fälle")
     }
     
     # Just-in-Time Factor-Konvertierung für Regression
+    complete_data_local <- complete_data
+    
     for (var_string in processed_vars) {
       if (grepl("\\*", var_string)) {
         # Interaktionsterm: Beide Variablen prüfen
@@ -7335,34 +7606,48 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
         interaction_vars <- str_trim(interaction_vars)
         
         for (var in interaction_vars) {
-          if (var %in% names(complete_data) && should_be_factor_for_regression(complete_data, var, config)) {
-            complete_data <- convert_to_factor_with_labels(complete_data, var)
+          if (var %in% names(complete_data_local) && should_be_factor_for_regression(complete_data_local, var, config)) {
+            complete_data_local <- convert_to_factor_with_labels(complete_data_local, var)
             # NA explizit entfernen aus Factor-Levels
-            if (is.factor(complete_data[[var]])) {
-              complete_data[[var]] <- droplevels(complete_data[[var]])
+            if (is.factor(complete_data_local[[var]])) {
+              complete_data_local[[var]] <- droplevels(complete_data_local[[var]])
             }
           }
         }
       } else {
         # Normale Variable
-        if (var_string %in% names(complete_data) && should_be_factor_for_regression(complete_data, var_string, config)) {
-          complete_data <- convert_to_factor_with_labels(complete_data, var_string)
+        if (var_string %in% names(complete_data_local) && should_be_factor_for_regression(complete_data_local, var_string, config)) {
+          complete_data_local <- convert_to_factor_with_labels(complete_data_local, var_string)
           # NA explizit entfernen aus Factor-Levels
-          if (is.factor(complete_data[[var_string]])) {
-            complete_data[[var_string]] <- droplevels(complete_data[[var_string]])
+          if (is.factor(complete_data_local[[var_string]])) {
+            complete_data_local[[var_string]] <- droplevels(complete_data_local[[var_string]])
           }
         }
       }
     }
     
+    complete_data <- complete_data_local
+    
+    list(success = TRUE, data = complete_data)
+    
   }, error = function(e) {
     cat("FEHLER bei Datenextraktion:", e$message, "\n")
-    return(NULL)
+    list(success = FALSE, error = e$message)
   })
+  
+  # Prüfe ob tryCatch erfolgreich war (return(NULL) im error handler kehrt nicht zur Parent-Funktion zurück)
+  if (is.list(extraction_result) && !is.null(extraction_result$success) && !extraction_result$success) {
+    return(NULL)
+  }
+  if (is.null(extraction_result) || !is.list(extraction_result) || is.null(extraction_result$data)) {
+    cat("FEHLER: Datenextraktion fehlgeschlagen.\n")
+    return(NULL)
+  }
+  complete_data <- extraction_result$data
   
   # 5. MULTILEVEL CHECK (vor Formel-Erstellung)
   if (regression_type == "multilevel") {
-    return(perform_multilevel_regression(complete_data, dependent_var, independent_vars, survey_obj, regression_name))
+    return(perform_multilevel_regression(complete_data, dependent_var, independent_vars, survey_obj, regression_name, config))
   }
   
   # 6. FORMEL ERSTELLEN UND VALIDIEREN (GEÄNDERT FÜR INTERAKTIONSTERME)
@@ -7394,7 +7679,7 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
         cat(" | Levels:", n_levels)
         if (n_levels < 2) {
           cat("\nFEHLER: Abhängige Variable hat nur", n_levels, "Level\n")
-          return(NULL)
+          stop("Abhängige Variable hat nur ", n_levels, " Level")
         }
       }
       cat("\n")
@@ -7425,7 +7710,8 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
               cat(" | Levels:", n_levels)
               if (n_levels < 2) {
                 cat(" ⚠ NUR 1 LEVEL - wird ausgeschlossen")
-                vars_to_exclude <- c(vars_to_exclude, var_string)
+                # A080 Fix: unique() verhindert doppelte Einträge
+                vars_to_exclude <- unique(c(vars_to_exclude, var_string))
               }
             }
             cat("\n")
@@ -7450,7 +7736,8 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
             cat(" | Levels:", n_levels)
             if (n_levels < 2) {
               cat(" ⚠ NUR 1 LEVEL - wird ausgeschlossen")
-              vars_to_exclude <- c(vars_to_exclude, var_string)
+              # A080 Fix: unique() verhindert doppelte Einträge
+              vars_to_exclude <- unique(c(vars_to_exclude, var_string))
             }
           }
           cat("\n")
@@ -7466,7 +7753,7 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
       
       if (length(processed_vars) == 0) {
         cat("FEHLER: Keine Prädiktoren mehr übrig nach Ausschluss\n")
-        return(NULL)
+        stop("Keine Prädiktoren mehr übrig nach Ausschluss")
       }
       
       # Formel neu erstellen UND formula_obj aktualisieren
@@ -7482,7 +7769,7 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
     formula_obj
   }, error = function(e) {
     cat("FEHLER bei Formel-Erstellung:", e$message, "\n")
-    return(NULL)
+    NULL
   })
   
   if (is.null(formula_obj)) {
@@ -7518,7 +7805,7 @@ perform_regression <- function(data, dependent_var, independent_vars, regression
   result$independent_vars <- processed_vars  # GEÄNDERT: Verwende gefilterte Liste
   result$regression_type <- regression_type
   result$n_complete <- nrow(complete_data)
-  result$weighted <- !is.null(survey_obj) && WEIGHTS
+  result$weighted <- weights_enabled(survey_obj)
   
   cat("✓ Regression", regression_name, "erfolgreich abgeschlossen\n")
   return(result)
@@ -7568,6 +7855,12 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL, conf
       
       data[[av_name]] <- numeric_values
       
+      # A070 Fix: Konvertierungsqualität prüfen
+      na_ratio <- sum(is.na(numeric_values)) / length(numeric_values)
+      if (na_ratio > 0.5) {
+        cat("  ⚠ WARNUNG: Über 50% der AV-Werte sind NA nach Konvertierung (", 
+            round(na_ratio * 100, 1), "%). Regression könnte unzuverlässig sein.\n")
+      }
       # Prüfe Erfolg
       n_converted <- sum(!is.na(numeric_values))
       n_na <- sum(is.na(numeric_values))
@@ -7592,7 +7885,7 @@ perform_linear_regression <- function(data, formula_obj, survey_obj = NULL, conf
     }
   }
   
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete lineare Regression
     if (!WEIGHT_VAR %in% names(data)) {
       cat("  ⚠ WARNUNG: Gewichtungsvariable", WEIGHT_VAR, "nicht in Daten gefunden\n")
@@ -7831,7 +8124,7 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
     cat("  AV ist binär: 0 (n=", sum(data[[av_name]] == 0, na.rm = TRUE), "), 1 (n=", sum(data[[av_name]] == 1, na.rm = TRUE), ")\n")
   }
   
-  if (!is.null(survey_obj) && WEIGHTS) {
+  if (weights_enabled(survey_obj)) {
     # Gewichtete logistische Regression
     if (!WEIGHT_VAR %in% names(data)) {
       cat("  ⚠ WARNUNG: Gewichtungsvariable", WEIGHT_VAR, "nicht in Daten gefunden\n")
@@ -8016,29 +8309,94 @@ perform_logistic_regression <- function(data, formula_obj, survey_obj = NULL) {
 
 # Ordinale Regression (vereinfacht)
 perform_ordinal_regression <- function(data, formula_obj, survey_obj = NULL, config = NULL) {
-  # Für ordinale Regression würde man normalerweise MASS::polr verwenden
-  # Da das package nicht immer verfügbar ist, verwenden wir hier eine vereinfachte lineare Regression
-  cat("HINWEIS: Ordinale Regression als lineare Regression durchgeführt.\n")
+  # Ordinale Regression mit MASS::polr (mit Fallback auf lineare Regression)
   
-  # Verwende die korrigierte lineare Regression (mit config)
+  # Versuche MASS::polr für ordinale logistische Regression
+  if (requireNamespace("MASS", quietly = TRUE)) {
+    cat("Ordinale Regression mit MASS::polr wird durchgeführt.\n")
+    
+    result <- tryCatch({
+      # Daten für polr vorbereiten: AV muss geordneter Factor sein
+      formula_terms <- terms(formula_obj)
+      dv_name <- as.character(formula_terms[[2]])
+      
+      if (dv_name %in% names(data)) {
+        if (!is.ordered(data[[dv_name]])) {
+          data[[dv_name]] <- factor(data[[dv_name]], ordered = TRUE)
+        }
+      }
+      
+      model <- MASS::polr(formula_obj, data = data, Hess = TRUE)
+      
+      # Koeffizienten und p-Werte extrahieren
+      coef_summary <- coef(summary(model))
+      p_values <- pnorm(abs(coef_summary[, "t value"]), lower.tail = FALSE) * 2
+      coef_summary <- cbind(coef_summary, "p value" = p_values)
+      
+      # Ergebnisse als Datenrahmen aufbereiten (ähnlich wie lineare Regression)
+      coef_df <- data.frame(
+        Term = rownames(coef_summary),
+        Schätzer = round(coef_summary[, "Value"], DIGITS_ROUND),
+        `Std.Fehler` = round(coef_summary[, "Std. Error"], DIGITS_ROUND),
+        `t-Wert` = round(coef_summary[, "t value"], DIGITS_ROUND),
+        `p-Wert` = round(p_values, 4),
+        stringsAsFactors = FALSE
+      )
+      names(coef_df) <- c("Term", "Schätzer", "Std.Fehler", "t-Wert", "p-Wert")
+      
+      # Modellgüte
+      null_model <- MASS::polr(update(formula_obj, . ~ 1), data = data, Hess = TRUE)
+      ll_full <- as.numeric(logLik(model))
+      ll_null <- as.numeric(logLik(null_model))
+      n_obs <- nobs(model)
+      
+      model_fit <- data.frame(
+        Kennwert = c("N", "Log-Likelihood", "Pseudo-R² (McFadden)"),
+        Wert = c(n_obs, round(ll_full, 4), round(1 - ll_full / ll_null, 4)),
+        stringsAsFactors = FALSE
+      )
+      
+      list(
+        type = "ordinal (polr)",
+        table = coef_df,
+        model_fit = model_fit,
+        formula = as.character(formula_obj),
+        n_obs = n_obs,
+        weighted = weights_enabled(survey_obj)
+      )
+    }, error = function(e) {
+      cat("WARNUNG: MASS::polr fehlgeschlagen:", e$message, "\n")
+      cat("Falle zurück auf lineare Regression (als Approximation).\n")
+      return(NULL)
+    })
+    
+    if (!is.null(result)) {
+      return(result)
+    }
+  } else {
+    cat("WARNUNG: Paket 'MASS' nicht verfügbar für ordinale Regression.\n")
+    cat("Falle zurück auf lineare Regression (als Approximation).\n")
+  }
+  
+  # Fallback: Lineare Regression mit klarer Kennzeichnung
+  cat("HINWEIS: Ordinale Regression als lineare Regression durchgeführt (Fallback).\n")
+  
   linear_result <- perform_linear_regression(data, formula_obj, survey_obj, config)
-  
-  # Ändere nur den Typ
-  linear_result$type <- "ordinal (als linear)"
+  linear_result$type <- "ordinal (als linear - Fallback)"
   
   return(linear_result)
 }
 
-perform_multilevel_regression <- function(data, dependent_var, independent_vars, survey_obj = NULL, regression_name) {
+perform_multilevel_regression <- function(data, dependent_var, independent_vars, survey_obj = NULL, regression_name, config = NULL) {
   
   cat("Führe Mehrebenenmodell durch:", regression_name, "\n")
   
   
-  # AUTOMATISCHE CLUSTERING-VARIABLE ERKENNUNG
-  cluster_var <- detect_cluster_variable(data, independent_vars)
+  # CLUSTERING-VARIABLE ERKENNUNG (aus Config oder Fallback)
+  cluster_var <- detect_cluster_variable(data, independent_vars, config, regression_name)
   
   if (is.null(cluster_var)) {
-    return(list(error = "Keine Clustering-Variable erkannt (z.B. Hochschul-ID)"))
+    return(list(error = "Keine Clustering-Variable erkannt. Bitte in der Config (Sheet 'Regressionen', Spalte 'cluster_variable') angeben."))
   }
   
   cat("Clustering-Variable erkannt:", cluster_var, "\n")
@@ -8057,20 +8415,65 @@ perform_multilevel_regression <- function(data, dependent_var, independent_vars,
   cat("Level-1 Variablen:", paste(level_vars$level1_vars, collapse = ", "), "\n")
   cat("Level-2 Variablen:", paste(level_vars$level2_vars, collapse = ", "), "\n")
   
-  # MODELL SCHÄTZEN
+  # MODELL SCHÄTZEN (A082 Fix: Konvergenz-Warnungen abfangen)
   tryCatch({
     
     # Prüfe Variablentyp der AV
     if (is.factor(data[[dependent_var]]) || length(unique(data[[dependent_var]])) <= 2) {
+      # A065 Fix: Prüfe Anzahl Level für glmer
+      if (is.factor(data[[dependent_var]]) && nlevels(data[[dependent_var]]) > 2) {
+        return(list(error = paste("Logistisches Mehrebenenmodell nicht möglich: AV hat", 
+                                  nlevels(data[[dependent_var]]), "Level (nur 2 unterstützt)")))
+      }
       # Logistisches Mehrebenenmodell
       cat("Schätze logistisches Mehrebenenmodell...\n")
-      model <- glmer(formula_result$formula, data = data, family = binomial())
+      model <- withCallingHandlers(
+        glmer(formula_result$formula, data = data, family = binomial()),
+        warning = function(w) {
+          if (grepl("singular|convergence|gradient", w$message, ignore.case = TRUE)) {
+            cat("  ⚠ Konvergenz-Warnung (glmer):", w$message, "\n")
+          }
+          invokeRestart("muffleWarning")
+        }
+      )
       model_type <- "logistic_multilevel"
     } else {
       # Lineares Mehrebenenmodell
       cat("Schätze lineares Mehrebenenmodell...\n")
-      model <- lmer(formula_result$formula, data = data)
+      model <- withCallingHandlers(
+        lmer(formula_result$formula, data = data),
+        warning = function(w) {
+          if (grepl("singular|convergence|gradient", w$message, ignore.case = TRUE)) {
+            cat("  ⚠ Konvergenz-Warnung (lmer):", w$message, "\n")
+          }
+          invokeRestart("muffleWarning")
+        }
+      )
       model_type <- "linear_multilevel"
+    }
+    
+    # A082 Fix: Singulären Fit prüfen → Fallback auf Random Intercept (A067)
+    if (!is.null(model) && inherits(model, "merMod") && isSingular(model)) {
+      cat("  ⚠ WARNUNG: Singulärer Fit — versuche Random-Intercept-only Modell...\n")
+      if (!is.null(formula_result$formula_simple) && 
+          !identical(formula_result$formula, formula_result$formula_simple)) {
+        tryCatch({
+          model <- withCallingHandlers(
+            lmer(formula_result$formula_simple, data = data),
+            warning = function(w) {
+              if (grepl("singular|convergence|gradient", w$message, ignore.case = TRUE)) {
+                cat("  ⚠ Konvergenz-Warnung (Fallback lmer):", w$message, "\n")
+              }
+              invokeRestart("muffleWarning")
+            }
+          )
+          cat("  ✓ Random-Intercept-only Modell erfolgreich geschätzt.\n")
+        }, error = function(e) {
+          cat("  ✗ Fallback-Modell ebenfalls fehlgeschlagen:", e$message, "\n")
+        })
+      } else {
+        cat("    Kein einfacheres Modell verfügbar (bereits Random Intercept only).\n")
+      }
     }
     
     # ERGEBNISSE EXTRAHIEREN
@@ -8082,41 +8485,71 @@ perform_multilevel_regression <- function(data, dependent_var, independent_vars,
   })
 }
 
-detect_cluster_variable <- function(data, independent_vars) {
-  "Erkennt automatisch die Clustering-Variable (Hochschul-ID)"
+detect_cluster_variable <- function(data, independent_vars, config = NULL, regression_name = NULL) {
+  "Erkennt die Clustering-Variable für Mehrebenenmodelle.
   
-  # Bekannte Hochschul-ID Patterns
-  cluster_patterns <- c(
-    "attribute_2", "hochschul_id", "hs_id", "uni_id", 
-    "institution_id", "school_id", "cluster_id"
-  )
+  Priorität:
+  1. Explizite Angabe in der Config (Sheet 'Regressionen', Spalte 'cluster_variable')
+  2. Heuristische Suche in independent_vars (mit Warnung)
   
-  # 1. Direkte Suche nach bekannten Patterns
-  for (pattern in cluster_patterns) {
-    if (pattern %in% names(data)) {
-      # Prüfe ob es wirklich eine Clustering-Variable ist (zwischen 5-100 Cluster)
-      n_clusters <- length(unique(data[[pattern]][!is.na(data[[pattern]])]))
-      if (n_clusters >= 5 && n_clusters <= 100) {
-        cat("Clustering-Variable gefunden:", pattern, "(", n_clusters, "Cluster)\n")
-        return(pattern)
+  Hartcodierte Variablennamen werden NICHT mehr verwendet."
+  
+  # 1. PRIORITÄT: Explizite Angabe in der Config
+  if (!is.null(config) && !is.null(config$regressionen) && nrow(config$regressionen) > 0) {
+    if ("cluster_variable" %in% names(config$regressionen)) {
+      # Finde die richtige Zeile anhand des regression_name
+      if (!is.null(regression_name) && regression_name %in% config$regressionen$regression_name) {
+        row_idx <- which(config$regressionen$regression_name == regression_name)
+        cluster_var_config <- config$regressionen$cluster_variable[row_idx]
+      } else {
+        # Fallback: Erster nicht-leerer Wert
+        cluster_vars <- config$regressionen$cluster_variable[!is.na(config$regressionen$cluster_variable) & config$regressionen$cluster_variable != ""]
+        cluster_var_config <- if (length(cluster_vars) > 0) cluster_vars[1] else NA
+      }
+      
+      if (!is.na(cluster_var_config) && cluster_var_config != "") {
+        if (cluster_var_config %in% names(data)) {
+          n_clusters <- length(unique(data[[cluster_var_config]][!is.na(data[[cluster_var_config]])]))
+          cat("✓ Clustering-Variable aus Config:", cluster_var_config, 
+              "(", n_clusters, "Cluster)\n")
+          return(cluster_var_config)
+        } else {
+          cat("⚠ WARNUNG: In Config angegebene Cluster-Variable '", cluster_var_config, 
+              "' nicht in Daten gefunden.\n")
+        }
       }
     }
   }
   
-  # 2. Suche in independent_vars nach potentiellen Cluster-Variablen
+  cat("ℹ Keine Cluster-Variable in der Config gefunden (Sheet 'Regressionen', Spalte 'cluster_variable').\n")
+  cat("  Versuche Heuristik als Fallback...\n")
+  
+  # 2. FALLBACK: Heuristische Suche in independent_vars (mit Warnung)
   for (var in independent_vars) {
     if (var %in% names(data)) {
       n_unique <- length(unique(data[[var]][!is.na(data[[var]])]))
       total_n <- nrow(data)
       
       # Heuristik: 5-100 Gruppen, jede Gruppe hat mind. 5 Personen
-      if (n_unique >= 5 && n_unique <= 100 && (total_n / n_unique) >= 5) {
-        cat("Potentielle Clustering-Variable:", var, "(", n_unique, "Cluster)\n")
+      # UND Variable sollte nicht primär numerisch/ordinal sein (kein Messwert)
+      var_values <- data[[var]][!is.na(data[[var]])]
+      looks_like_id <- is.character(var_values) || 
+                        (is.numeric(var_values) && !all(var_values %in% 1:10))
+      
+      if (n_unique >= 5 && n_unique <= 100 && (total_n / n_unique) >= 5 && looks_like_id) {
+        cat("⚠ WARNUNG: Clustering-Variable durch Heuristik erkannt:", var, 
+            "(", n_unique, "Cluster)\n")
+        cat("  Diese Auto-Erkennung kann unzuverlässig sein.\n")
+        cat("  Bitte geben Sie die Cluster-Variable explizit in der Config an:\n")
+        cat("  Sheet 'Regressionen', Spalte 'cluster_variable'\n")
         return(var)
       }
     }
   }
   
+  cat("✗ Keine Clustering-Variable erkannt.\n")
+  cat("  Lösung: Fügen Sie eine Spalte 'cluster_variable' im Sheet 'Regressionen' hinzu\n")
+  cat("  und tragen Sie dort den Variablennamen ein (z.B. 'hochschul_id').\n")
   return(NULL)
 }
 
@@ -8167,6 +8600,8 @@ check_within_cluster_variance <- function(data, var, cluster_var) {
     mean_within_var <- mean(cluster_variances$x, na.rm = TRUE)
     total_var <- var(data[[var]], na.rm = TRUE)
     
+    # A066 Fix: Division-durch-Null Guard
+    if (is.na(total_var) || total_var == 0) return(0)
     return(mean_within_var / total_var)
   }
   
@@ -8178,6 +8613,8 @@ check_within_cluster_variance <- function(data, var, cluster_var) {
   mean_categories <- mean(cluster_categories$x, na.rm = TRUE)
   total_categories <- length(unique(data[[var]][!is.na(data[[var]])]))
   
+  # A066 Fix: Division-durch-Null Guard
+  if (is.na(total_categories) || total_categories == 0) return(0)
   return(mean_categories / total_categories)
 }
 
@@ -8232,8 +8669,9 @@ extract_multilevel_results <- function(model, model_type, level_vars, cluster_va
   fixed_se <- sqrt(diag(vcov(model)))
   
   if (model_type == "linear_multilevel") {
-    # T-Tests für lineare Modelle
+    # T-Tests für lineare Modelle (A068: df als Approximation dokumentiert)
     t_values <- fixed_coef / fixed_se
+    # Hinweis: df ist eine naive Approximation. Für präzise Werte lmerTest::lmer() verwenden.
     df_est <- nrow(model@frame) - length(fixed_coef)  # Approximation
     p_values <- 2 * (1 - pt(abs(t_values), df = df_est))
     
@@ -8273,7 +8711,7 @@ extract_multilevel_results <- function(model, model_type, level_vars, cluster_va
   random_effects <- as.data.frame(VarCorr(model))
   
   random_table <- data.frame(
-    Komponente = paste(random_effects$grp, random_effects$var1, sep = " - "),
+    Komponente = paste(random_effects$grp, ifelse(is.na(random_effects$var1), "Residual", random_effects$var1), sep = " - "),
     Varianz = round(random_effects$vcov, DIGITS_ROUND),
     Std_Abweichung = round(random_effects$sdcor, DIGITS_ROUND),
     stringsAsFactors = FALSE
@@ -8350,8 +8788,8 @@ smart_round_coefficient <- function(x, digits = 2) {
     # Sehr kleine Werte: 4 Dezimalstellen  
     return(round(x, 4))
   } else {
-    # Extrem kleine Werte: Wissenschaftliche Notation
-    return(formatC(x, format = "e", digits = 2))
+    # Extrem kleine Werte: Wissenschaftliche Notation (A114 Fix: als numeric zurückgeben)
+    return(as.numeric(formatC(x, format = "e", digits = 2)))
   }
 }
 
@@ -8369,6 +8807,8 @@ smart_round_coefficient <- function(x, digits = 2) {
 find_single_variable <- function(target_var, data_vars) {
   # Verwende die bewährte update_variable_list Logik für eine einzelne Variable
   result <- update_variable_list(c(target_var), data_vars)
+  # A069 Fix: NULL zurückgeben wenn kein Match statt NA
+  if (length(result) == 0 || is.na(result[1])) return(NULL)
   return(result[1])
 }
 
@@ -8386,7 +8826,7 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
   
   results <- list()
   
-  for (i in 1:nrow(config$textantworten)) {
+  for (i in seq_len(nrow(config$textantworten))) {
     analysis_name <- config$textantworten$analysis_name[i]
     # VERWENDE BEREITS AKTUALISIERTE CONFIG-NAMEN (nicht die originalen!)
     text_var <- config$textantworten$text_variable[i]  
@@ -8405,7 +8845,7 @@ process_text_responses <- function(prepared_data, custom_val_labels = NULL) {
     if (filter_applied) {
       cat("  Filter angewendet: '", filter_info$filter_string, "' - ", 
           filter_info$filtered_n, " von ", filter_info$original_n, " Fällen (",
-          round(filter_info$filtered_n/filter_info$original_n*100, 1), "%)\n", sep = "")
+          round(if (!is.null(filter_info$original_n) && filter_info$original_n > 0) filter_info$filtered_n/filter_info$original_n*100 else 0, 1), "%)\n", sep = "")
     }
     
     cat("Suche Text-Variable:", text_var, "\n")
@@ -8472,7 +8912,7 @@ extract_text_responses_simple <- function(data, text_var, sort_var, min_length, 
     
     # STRATEGIE 1: Globales Codebook (primär - aus SPSS-Labels)
     if (exists("global_codebook", envir = .GlobalEnv)) {
-      codebook <- get("global_codebook", envir = .GlobalEnv)
+      codebook <- get_global_codebook()
       if (sort_var %in% codebook$Variable) {
         wertelabels <- codebook$Wertelabels[codebook$Variable == sort_var]
         if (!is.na(wertelabels) && wertelabels != "keine" && wertelabels != "") {
@@ -8523,48 +8963,42 @@ extract_text_responses_simple <- function(data, text_var, sort_var, min_length, 
       cat("    Eindeutige Codes in Daten:", paste(head(unique_codes, 5), collapse = ", "), "\n")
       cat("    Label-Keys (names):", paste(head(names(labels), 5), collapse = ", "), "\n")
       
-      # Für jeden Code das passende Label finden
-      matched_count <- 0
-      for (i in seq_len(nrow(text_data))) {
-        code <- as.character(text_data$Sort_Kategorie[i])
+      # Vektorisierte Label-Zuordnung (A073 Fix: ersetzt per-row for-Schleife)
+      codes <- as.character(text_data$Sort_Kategorie)
+      labels_result <- codes  # Default: Code als Label
+      
+      # 1. Direkte Übereinstimmung (vektorisiert)
+      direct_idx <- codes %in% names(labels)
+      labels_result[direct_idx] <- labels[codes[direct_idx]]
+      
+      # 2. Pattern: AO01, AO02 etc. -> versuche verschiedene Formate (vektorisiert)
+      ao_pattern_idx <- grepl("^[A-Z]+[0-9]+$", codes) & !direct_idx & !is.na(codes) & codes != ""
+      
+      if (any(ao_pattern_idx)) {
+        ao_codes <- codes[ao_pattern_idx]
+        num_parts <- gsub("^[A-Z]+0*", "", ao_codes)
         
-        # Skip NA
-        if (is.na(code) || code == "") {
-          next
-        }
-        
-        text_data$Sort_Kategorie_Label[i] <- code  # Default: Verwende Code als Label
-        
-        # Direkte Übereinstimmung: "AO01" -> "AO01"
-        if (code %in% names(labels)) {
-          text_data$Sort_Kategorie_Label[i] <- labels[code]
-          matched_count <- matched_count + 1
-          next
-        }
-        
-        # Pattern: AO01, AO02, AO03 -> extrahiere Nummer und versuche Match
-        if (grepl("^[A-Z]+[0-9]+$", code)) {
-          # Extrahiere Nummer: AO01 -> 1, AO02 -> 2
-          num_part <- gsub("^[A-Z]+0*", "", code)
-          
-          # Versuche verschiedene Formate
+        # Baue Lookup-Tabelle: alle Kandidaten -> Label
+        for (j in seq_along(ao_codes)) {
+          np <- num_parts[j]
           candidates <- c(
-            num_part,                           # "1"
-            paste0("AO", num_part),            # "AO1"
-            paste0("AO0", num_part),           # "AO01"
-            paste0("A", num_part),             # "A1"
-            sprintf("%02d", as.numeric(num_part))  # "01"
+            np,
+            paste0("AO", np),
+            paste0("AO0", np),
+            paste0("A", np),
+            sprintf("%02d", as.numeric(np))
           )
-          
           for (candidate in candidates) {
             if (candidate %in% names(labels)) {
-              text_data$Sort_Kategorie_Label[i] <- labels[candidate]
-              matched_count <- matched_count + 1
+              labels_result[ao_pattern_idx][j] <- labels[candidate]
               break
             }
           }
         }
       }
+      
+      text_data$Sort_Kategorie_Label <- labels_result
+      matched_count <- sum(direct_idx) + sum(ao_pattern_idx & labels_result != codes)
       
       cat("    ✓ Labels zugeordnet:", matched_count, "von", sum(!is.na(text_data$Sort_Kategorie) & text_data$Sort_Kategorie != ""), "Codes\n")
     } else {
@@ -8674,7 +9108,7 @@ create_variable_overview <- function(data, config, descriptive_results, crosstab
   matrix_vars_used <- character(0)
   matrix_config <- config$variablen[config$variablen$data_type == "matrix", ]
   if(nrow(matrix_config) > 0) {
-    for(i in 1:nrow(matrix_config)) {
+    for(i in seq_len(nrow(matrix_config))) {
       matrix_name <- matrix_config$variable_name[i]
       # Finde alle Matrix-Items mit verschiedenen Trennern (gleiche Logik wie in create_matrix_table)
       matrix_patterns <- c(
@@ -8746,7 +9180,7 @@ create_variable_overview <- function(data, config, descriptive_results, crosstab
     # Prüfe ob Variable ein Matrix-Item ist
     if(var %in% matrix_vars_used) {
       # Finde die zugehörige Matrix-Hauptvariable
-      for(i in 1:nrow(matrix_config)) {
+      for(i in seq_len(nrow(matrix_config))) {
         matrix_name <- matrix_config$variable_name[i]
         matrix_patterns <- c(
           paste0("^", matrix_name, "\\[.+\\]$"),
@@ -8842,6 +9276,22 @@ export_errors_and_warnings <- function(wb, descriptive_results, crosstab_results
         Fehlermeldung = error$error_message,
         stringsAsFactors = FALSE
       ))
+    }
+  }
+  
+  # Fehler aus Regressionen (A071 Fix: Parameter wird jetzt genutzt)
+  if (!is.null(regression_results)) {
+    for (reg_name in names(regression_results)) {
+      result <- regression_results[[reg_name]]
+      if (!is.null(result) && "error" %in% names(result) && !is.null(result$error)) {
+        all_errors <- rbind(all_errors, data.frame(
+          Bereich = "Regressionen",
+          Typ = "Regressionsfehler",
+          Variable = reg_name,
+          Fehlermeldung = as.character(result$error),
+          stringsAsFactors = FALSE
+        ))
+      }
     }
   }
   
@@ -8980,8 +9430,13 @@ export_results <- function(descriptive_results, crosstab_results, regression_res
   # Sheet 7: Variablen-Übersicht (verschoben)
   export_variable_overview(wb, variable_overview, header_style, table_style, title_style)
   
-  # Excel-Datei speichern
-  saveWorkbook(wb, OUTPUT_FILE, overwrite = TRUE)
+  # Excel-Datei speichern (mit Fehlerbehandlung)
+  tryCatch({
+    saveWorkbook(wb, OUTPUT_FILE, overwrite = TRUE)
+  }, error = function(e) {
+    stop("Fehler beim Speichern der Excel-Datei '", OUTPUT_FILE, "': ", e$message,
+         "\nMögliche Ursachen: Datei ist in Excel geöffnet, Verzeichnis nicht beschreibbar.")
+  })
   
   # Erfolgsausgabe mit klickbarer URI
   cat("\n")
@@ -8993,8 +9448,7 @@ export_results <- function(descriptive_results, crosstab_results, regression_res
   absolute_path <- normalizePath(OUTPUT_FILE, winslash = "/", mustWork = FALSE)
   
   # Erstelle file:// URI mit URL-Encoding für Leerzeichen
-  file_uri <- paste0("file:///", gsub("\\\\", "/", absolute_path))
-  file_uri <- gsub(" ", "%20", file_uri)  # Leerzeichen → %20
+  file_uri <- paste0("file:///", utils::URLencode(gsub("\\\\", "/", absolute_path), reserved = TRUE))
   
   cat("\n📊 Excel-Datei:\n")
   cat("   Pfad: ", OUTPUT_FILE, "\n", sep = "")
@@ -9068,7 +9522,7 @@ export_descriptive_statistics <- function(wb, descriptive_results, header_style,
     if (!is.null(result$filter_applied) && result$filter_applied) {
       filter_text <- paste0("Filter angewendet: ", result$filter_string, " (", 
                             result$filtered_n, " von ", result$original_n, " Fällen, ",
-                            round(result$filtered_n/result$original_n*100, 1), "%)")
+                            round(if (!is.null(result$original_n) && result$original_n > 0) result$filtered_n/result$original_n*100 else 0, 1), "%)")
       writeData(wb, "Deskriptive_Statistiken", filter_text, startRow = current_row)
       current_row <- current_row + 1
     }
@@ -9218,7 +9672,7 @@ export_crosstabs <- function(wb, crosstab_results, header_style, table_style, ti
     if (!is.null(result$filter_applied) && result$filter_applied) {
       filter_text <- paste0("Filter angewendet: ", result$filter_string, " (", 
                             result$filtered_n, " von ", result$original_n, " Fällen, ",
-                            round(result$filtered_n/result$original_n*100, 1), "%)")
+                            round(if (!is.null(result$original_n) && result$original_n > 0) result$filtered_n/result$original_n*100 else 0, 1), "%)")
       writeData(wb, "Kreuztabellen", filter_text, startRow = current_row)
       current_row <- current_row + 1
     }
@@ -9493,23 +9947,19 @@ export_statistical_tests <- function(wb, crosstab_results, header_style, table_s
                    cols = 1:5, gridExpand = TRUE)
           current_row <- current_row + nrow(matrix_test_summary) + 2
         } else {
-          # Normaler Kreuztabellen-Test
-          test_details <- data.frame(
-            Parameter = character(),
-            Wert = character(),
-            stringsAsFactors = FALSE
-          )
-          
-          # Basis-Parameter
-          test_details <- rbind(test_details, data.frame(Parameter = "Test", Wert = test$test))
-          test_details <- rbind(test_details, data.frame(Parameter = "Statistik", Wert = if(!is.na(test$statistic)) as.character(test$statistic) else "-"))
-          test_details <- rbind(test_details, data.frame(Parameter = "p-Wert", Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-"))
-          test_details <- rbind(test_details, data.frame(Parameter = "Ergebnis", Wert = test$result))
+          # Normaler Kreuztabellen-Test (A072: list + do.call statt inkrementellem rbind)
+          test_rows <- list()
+          test_rows[[length(test_rows) + 1]] <- data.frame(Parameter = "Test", Wert = test$test, stringsAsFactors = FALSE)
+          test_rows[[length(test_rows) + 1]] <- data.frame(Parameter = "Statistik", Wert = if(!is.na(test$statistic)) as.character(test$statistic) else "-", stringsAsFactors = FALSE)
+          test_rows[[length(test_rows) + 1]] <- data.frame(Parameter = "p-Wert", Wert = if(!is.na(test$p_value)) as.character(test$p_value) else "-", stringsAsFactors = FALSE)
+          test_rows[[length(test_rows) + 1]] <- data.frame(Parameter = "Ergebnis", Wert = test$result, stringsAsFactors = FALSE)
           
           # Freiheitsgrade nur wenn vorhanden
           if ("df" %in% names(test) && !is.null(test$df) && length(test$df) == 1 && !is.na(test$df)) {
-            test_details <- rbind(test_details, data.frame(Parameter = "Freiheitsgrade", Wert = as.character(test$df)))
+            test_rows[[length(test_rows) + 1]] <- data.frame(Parameter = "Freiheitsgrade", Wert = as.character(test$df), stringsAsFactors = FALSE)
           }
+          
+          test_details <- do.call(rbind, test_rows)
           
           writeData(wb, "Statistische_Tests", test_details, startRow = current_row, colNames = TRUE)
           addStyle(wb, "Statistische_Tests", header_style, rows = current_row, cols = 1:2)
@@ -9529,63 +9979,7 @@ export_statistical_tests <- function(wb, crosstab_results, header_style, table_s
 }
 
 
-# Regressionen exportieren
-export_regressions_old <- function(wb, regression_results, header_style, table_style, title_style) {
-  addWorksheet(wb, "Regressionsanalysen")
-  
-  current_row <- 1
-  
-  # Titel
-  writeData(wb, "Regressionsanalysen", "Regressionsanalysen", startRow = current_row)
-  addStyle(wb, "Regressionsanalysen", title_style, rows = current_row, cols = 1)
-  current_row <- current_row + 2
-  
-  for (reg_name in names(regression_results)) {
-    result <- regression_results[[reg_name]]
-    
-    # Regression Überschrift
-    writeData(wb, "Regressionsanalysen", 
-              paste("Modell:", reg_name, "(", result$regression_type, ")"), 
-              startRow = current_row)
-    addStyle(wb, "Regressionsanalysen", title_style, rows = current_row, cols = 1)
-    current_row <- current_row + 1
-    
-    # Modell-Info
-    writeData(wb, "Regressionsanalysen", 
-              paste("AV:", result$dependent_var, "| UV:", paste(result$independent_vars, collapse = ", ")), 
-              startRow = current_row)
-    current_row <- current_row + 1
-    
-    writeData(wb, "Regressionsanalysen", 
-              paste("N =", result$n_complete, "| Gewichtet:", result$weighted), 
-              startRow = current_row)
-    current_row <- current_row + 2
-    
-    # Koeffizienten
-    writeData(wb, "Regressionsanalysen", "Koeffizienten:", startRow = current_row)
-    current_row <- current_row + 1
-    writeData(wb, "Regressionsanalysen", result$coefficients, startRow = current_row, colNames = TRUE)
-    addStyle(wb, "Regressionsanalysen", header_style, rows = current_row, cols = 1:ncol(result$coefficients))
-    addStyle(wb, "Regressionsanalysen", table_style, 
-             rows = (current_row + 1):(current_row + nrow(result$coefficients)), 
-             cols = 1:ncol(result$coefficients), gridExpand = TRUE)
-    current_row <- current_row + nrow(result$coefficients) + 2
-    
-    # Modell-Güte
-    writeData(wb, "Regressionsanalysen", "Modell-Güte:", startRow = current_row)
-    current_row <- current_row + 1
-    writeData(wb, "Regressionsanalysen", result$model_fit, startRow = current_row, colNames = TRUE)
-    addStyle(wb, "Regressionsanalysen", header_style, rows = current_row, cols = 1:ncol(result$model_fit))
-    addStyle(wb, "Regressionsanalysen", table_style, 
-             rows = (current_row + 1):(current_row + nrow(result$model_fit)), 
-             cols = 1:ncol(result$model_fit), gridExpand = TRUE)
-    current_row <- current_row + nrow(result$model_fit) + 3
-  }
-  
-  # Spaltenbreite anpassen
-  setColWidths(wb, "Regressionsanalysen", cols = 1:7, widths = "auto")
-}
-
+# Regressionen exportieren (A103: export_regressions_old entfernt)
 # Erweitern Sie export_regressions() um Mehrebenenmodelle:
 export_regressions <- function(wb, regression_results, header_style, table_style, title_style) {
   addWorksheet(wb, "Regressionsanalysen")
@@ -9599,6 +9993,19 @@ export_regressions <- function(wb, regression_results, header_style, table_style
   
   for (reg_name in names(regression_results)) {
     result <- regression_results[[reg_name]]
+    
+    # Guard: Fehlerhafte Regressionsergebnisse überspringen
+    if (is.null(result) || (!is.null(result$error) && !"type" %in% names(result))) {
+      cat("  ⚠ Überspringe Regression '", reg_name, "' beim Export: Fehler oder unvollständiges Ergebnis\n")
+      if (!is.null(result) && !is.null(result$error)) {
+        writeData(wb, "Regressionsanalysen", 
+                  paste("Modell:", reg_name, "(FEHLER:", result$error, ")"), 
+                  startRow = current_row)
+        addStyle(wb, "Regressionsanalysen", title_style, rows = current_row, cols = 1)
+        current_row <- current_row + 3
+      }
+      next
+    }
     
     # Regression Überschrift
     writeData(wb, "Regressionsanalysen", 
@@ -9614,7 +10021,7 @@ export_regressions <- function(wb, regression_results, header_style, table_style
     current_row <- current_row + 1
     
     # MEHREBENEN-SPEZIFISCHE INFO
-    if (grepl("multilevel", result$type)) {
+    if (!is.null(result$regression_type) && grepl("multilevel", result$regression_type)) {
       writeData(wb, "Regressionsanalysen", 
                 paste("Clustering:", result$cluster_variable, "| Level-1:", paste(result$level1_variables, collapse = ", "), 
                       "| Level-2:", paste(result$level2_variables, collapse = ", ")), 
@@ -9622,7 +10029,9 @@ export_regressions <- function(wb, regression_results, header_style, table_style
       current_row <- current_row + 1
       
       writeData(wb, "Regressionsanalysen", 
-                paste("N =", result$model_fit$Wert[result$model_fit$Kennwert == "N"], 
+                paste("N =", 
+                      {n_val <- result$model_fit$Wert[result$model_fit$Kennwert == "N"]; 
+                       if (length(n_val) > 0) n_val else "N/A"}, 
                       "| Cluster =", result$n_clusters, "| Gewichtet:", result$weighted), 
                 startRow = current_row)
     } else {
@@ -9633,17 +10042,24 @@ export_regressions <- function(wb, regression_results, header_style, table_style
     current_row <- current_row + 2
     
     # Fixed Effects / Koeffizienten
-    writeData(wb, "Regressionsanalysen", "Fixed Effects / Koeffizienten:", startRow = current_row)
-    current_row <- current_row + 1
-    writeData(wb, "Regressionsanalysen", result$coefficients, startRow = current_row, colNames = TRUE)
-    addStyle(wb, "Regressionsanalysen", header_style, rows = current_row, cols = 1:ncol(result$coefficients))
-    addStyle(wb, "Regressionsanalysen", table_style, 
-             rows = (current_row + 1):(current_row + nrow(result$coefficients)), 
-             cols = 1:ncol(result$coefficients), gridExpand = TRUE)
-    current_row <- current_row + nrow(result$coefficients) + 2
+    if (!is.null(result$coefficients) && ncol(result$coefficients) > 0 && nrow(result$coefficients) > 0) {
+      writeData(wb, "Regressionsanalysen", "Fixed Effects / Koeffizienten:", startRow = current_row)
+      current_row <- current_row + 1
+      writeData(wb, "Regressionsanalysen", result$coefficients, startRow = current_row, colNames = TRUE)
+      addStyle(wb, "Regressionsanalysen", header_style, rows = current_row, cols = 1:ncol(result$coefficients))
+      addStyle(wb, "Regressionsanalysen", table_style, 
+               rows = (current_row + 1):(current_row + nrow(result$coefficients)), 
+               cols = 1:ncol(result$coefficients), gridExpand = TRUE)
+      current_row <- current_row + nrow(result$coefficients) + 2
+    } else {
+      writeData(wb, "Regressionsanalysen", "Keine Koeffizienten verfügbar.", startRow = current_row)
+      current_row <- current_row + 2
+    }
     
     # Random Effects (nur für Mehrebenenmodelle)
-    if (grepl("multilevel", result$type) && "random_effects" %in% names(result)) {
+    if (!is.null(result$regression_type) && grepl("multilevel", result$regression_type) && 
+        "random_effects" %in% names(result) && !is.null(result$random_effects) && 
+        ncol(result$random_effects) > 0 && nrow(result$random_effects) > 0) {
       writeData(wb, "Regressionsanalysen", "Random Effects:", startRow = current_row)
       current_row <- current_row + 1
       writeData(wb, "Regressionsanalysen", result$random_effects, startRow = current_row, colNames = TRUE)
@@ -9655,14 +10071,18 @@ export_regressions <- function(wb, regression_results, header_style, table_style
     }
     
     # Modell-Güte
-    writeData(wb, "Regressionsanalysen", "Modell-Güte:", startRow = current_row)
-    current_row <- current_row + 1
-    writeData(wb, "Regressionsanalysen", result$model_fit, startRow = current_row, colNames = TRUE)
-    addStyle(wb, "Regressionsanalysen", header_style, rows = current_row, cols = 1:ncol(result$model_fit))
-    addStyle(wb, "Regressionsanalysen", table_style, 
-             rows = (current_row + 1):(current_row + nrow(result$model_fit)), 
-             cols = 1:ncol(result$model_fit), gridExpand = TRUE)
-    current_row <- current_row + nrow(result$model_fit) + 3
+    if (!is.null(result$model_fit) && ncol(result$model_fit) > 0 && nrow(result$model_fit) > 0) {
+      writeData(wb, "Regressionsanalysen", "Modell-Güte:", startRow = current_row)
+      current_row <- current_row + 1
+      writeData(wb, "Regressionsanalysen", result$model_fit, startRow = current_row, colNames = TRUE)
+      addStyle(wb, "Regressionsanalysen", header_style, rows = current_row, cols = 1:ncol(result$model_fit))
+      addStyle(wb, "Regressionsanalysen", table_style, 
+               rows = (current_row + 1):(current_row + nrow(result$model_fit)), 
+               cols = 1:ncol(result$model_fit), gridExpand = TRUE)
+      current_row <- current_row + nrow(result$model_fit) + 3
+    } else {
+      current_row <- current_row + 2
+    }
   }
   
   # Spaltenbreite anpassen
@@ -9760,10 +10180,10 @@ export_open_text_responses_separate <- function(text_results) {
   
   cat("\nExportiere offene Textantworten in separate Excel-Datei...\n")
   
-  # Erstelle Dateinamen basierend auf OUTPUT_FILE
-  output_dir <- dirname(OUTPUT_FILE)
+  # Erstelle Dateinamen basierend auf OUTPUT_FILE (A074 Fix: output_base wird verwendet)
+  output_dir <- if (exists("OUTPUT_FILE") && !is.null(OUTPUT_FILE)) dirname(OUTPUT_FILE) else getwd()
   output_base <- tools::file_path_sans_ext(basename(OUTPUT_FILE))
-  text_output_file <- file.path(output_dir, "Offene_Textantworten.xlsx")
+  text_output_file <- file.path(output_dir, paste0(output_base, "_Textantworten.xlsx"))
   
   # Erstelle neue Workbook
   wb <- createWorkbook()
@@ -9805,7 +10225,7 @@ export_open_text_responses_separate <- function(text_results) {
     sort_var_label <- if (!is.na(result$sort_variable) && result$sort_variable != "") {
       # Versuche Label aus globalem Codebook zu holen
       if (exists("global_codebook", envir = .GlobalEnv)) {
-        codebook <- get("global_codebook", envir = .GlobalEnv)
+        codebook <- get_global_codebook()
         if (result$sort_variable %in% codebook$Variable) {
           label <- codebook$Label[codebook$Variable == result$sort_variable]
           if (!is.null(label) && label != "" && label != result$sort_variable) {
@@ -9865,8 +10285,7 @@ export_open_text_responses_separate <- function(text_results) {
     
     # Absoluter Pfad für URI mit URL-Encoding
     absolute_path <- normalizePath(text_output_file, winslash = "/", mustWork = FALSE)
-    file_uri <- paste0("file:///", gsub("\\\\", "/", absolute_path))
-    file_uri <- gsub(" ", "%20", file_uri)  # Leerzeichen → %20
+    file_uri <- paste0("file:///", utils::URLencode(gsub("\\\\", "/", absolute_path), reserved = TRUE))
     
     cat("\n📝 Textantworten-Datei:\n")
     cat("   Pfad: ", text_output_file, "\n", sep = "")
@@ -9883,7 +10302,7 @@ export_open_text_responses_separate <- function(text_results) {
 # =============================================================================
 
 save_final_dataset <- function(data, config) {
-  if (!SAVE_FINAL_DATASET) {
+  if (!exists("SAVE_FINAL_DATASET", envir = .GlobalEnv) || !SAVE_FINAL_DATASET) {
     cat("Speichern des finalen Datensatzes ist deaktiviert.\n")
     return()
   }
@@ -9893,26 +10312,36 @@ save_final_dataset <- function(data, config) {
   # Erstelle Ausgabe-Verzeichnis falls nicht vorhanden
   output_dir <- dirname(FINAL_DATASET_FILE)
   if (!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
+    # A104 Fix: Rückgabewert prüfen
+    if (!dir.create(output_dir, recursive = TRUE)) {
+      cat("FEHLER: Konnte Verzeichnis nicht erstellen:", output_dir, "\n")
+      return(invisible(NULL))
+    }
     cat("Verzeichnis erstellt:", output_dir, "\n")
   }
   
-  # Füge Metadaten als Attribute hinzu
+  # Füge Metadaten als Attribute hinzu (A107 Fix: Pattern einmal definiert)
+  derived_var_pattern <- "(_index|_num|_binary|_quote|_avg|_kat)$"
   attr(data, "processing_info") <- list(
     processing_date = Sys.time(),
-    original_variables = ncol(data) - length(grep("(_index|_num|_binary|_quote|_avg|_kat)$", names(data))),
-    created_variables = length(grep("(_index|_num|_binary|_quote|_avg|_kat)$", names(data))),
+    original_variables = ncol(data) - length(grep(derived_var_pattern, names(data))),
+    created_variables = length(grep(derived_var_pattern, names(data))),
     total_variables = ncol(data),
     n_observations = nrow(data),
     config_variables = nrow(config$variablen),
-    weights_used = WEIGHTS,
-    weight_variable = if(WEIGHTS) WEIGHT_VAR else NA
+    weights_used = if (exists("WEIGHTS", envir = .GlobalEnv)) WEIGHTS else FALSE,
+    weight_variable = if (exists("WEIGHTS", envir = .GlobalEnv) && WEIGHTS && exists("WEIGHT_VAR", envir = .GlobalEnv)) WEIGHT_VAR else NA
   )
   
   # Speichere als RDS (behält alle Attribute und Datentypen)
-  saveRDS(data, FINAL_DATASET_FILE)
-  cat("Finaler Datensatz gespeichert als:", FINAL_DATASET_FILE, "\n")
-  cat("✓ Finaler Datensatz erfolgreich gespeichert\n")
+  tryCatch({
+    saveRDS(data, FINAL_DATASET_FILE)
+    cat("Finaler Datensatz gespeichert als:", FINAL_DATASET_FILE, "\n")
+    cat("✓ Finaler Datensatz erfolgreich gespeichert\n")
+  }, error = function(e) {
+    cat("FEHLER: Finaler Datensatz konnte nicht gespeichert werden:", e$message, "\n")
+    cat("  Zieldatei:", FINAL_DATASET_FILE, "\n")
+  })
 }
 
 
@@ -9972,6 +10401,13 @@ main <- function() {
     cat("-------------------------\n")
     for (var_name in names(descriptive_results)) {
       result <- descriptive_results[[var_name]]
+      
+      # NULL/Error-Prüfung: Fehlerhafte Ergebnisse überspringen
+      if (is.null(result) || ("type" %in% names(result) && result$type == "error")) {
+        cat("\nVariable:", var_name, "(übersprungen - Fehler oder nicht verfügbar)\n")
+        next
+      }
+      
       cat("\nVariable:", var_name, "(", result$type, ")\n")
       cat("Frage:", result$question, "\n")
       cat("Gewichtet:", result$weighted, "\n")
@@ -10006,22 +10442,22 @@ main <- function() {
       cat("\n", rep("-", 50), "\n")
     }
     # 5. Kreuztabellen
-    cat("\n5. KREUZTABELLEN\n")
+    cat("\n6. KREUZTABELLEN\n")
     cat("----------------\n")
     crosstab_results <- create_crosstabs(prepared_data)
     
     # 6. Regressionen
-    cat("\n6. REGRESSIONSANALYSEN\n")
+    cat("\n7. REGRESSIONSANALYSEN\n")
     cat("----------------------\n")
     regression_results <- run_regressions(prepared_data)
     
     # 7. Textantworten - NEUE ERGÄNZUNG
-    cat("\n7. TEXTANTWORTEN\n")
+    cat("\n8. TEXTANTWORTEN\n")
     cat("----------------\n")
     text_results <- process_text_responses(prepared_data, custom_val_labels)
     
     # 8. Export (Nummer angepasst)
-    cat("\n8. EXCEL EXPORT\n")
+    cat("\n9. EXCEL EXPORT\n")
     cat("---------------\n")
     
     # Variablen-Übersicht erstellen
