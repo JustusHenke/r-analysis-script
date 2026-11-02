@@ -3,3 +3,5 @@ CRUSH.MD
 .kiro/
 .gitignore
 .dev
+.testdata
+_ul

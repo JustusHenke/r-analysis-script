@@ -4388,6 +4388,9 @@ find_matrix_items <- function(matrix_name, data) {
     
     # Filter and validate
     found_vars <- found_vars[!grepl("other", found_vars, ignore.case = TRUE)]
+    # Indizes (z.B. SI02_index, DS01_index) sind abgeleitete Variablen,
+    # keine Matrix-Items - sonst verfaelschen sie die Matrix-Tabellen
+    found_vars <- found_vars[!grepl("_index$", found_vars, ignore.case = TRUE)]
     found_vars <- unique(found_vars)
     
     if (length(found_vars) >= 2) {
@@ -5011,6 +5014,8 @@ is_matrix_variable <- function(var_name, data, config) {
   
   # Filter out [other] variables (bestehende Logik)
   matrix_vars <- matrix_vars[!grepl("other", matrix_vars, ignore.case = TRUE)]
+  # Indizes sind keine Matrix-Items
+  matrix_vars <- matrix_vars[!grepl("_index$", matrix_vars, ignore.case = TRUE)]
   matrix_vars <- unique(matrix_vars)
   
   return(length(matrix_vars) >= 2)  # Mindestens 2 Items für Matrix
@@ -9126,6 +9131,8 @@ create_variable_overview <- function(data, config, descriptive_results, crosstab
       
       # FILTER OUT [other] variables
       found_matrix_vars <- found_matrix_vars[!grepl("other", found_matrix_vars, ignore.case = TRUE)]
+      # Indizes sind keine Matrix-Items
+      found_matrix_vars <- found_matrix_vars[!grepl("_index$", found_matrix_vars, ignore.case = TRUE)]
       found_matrix_vars <- unique(found_matrix_vars)
       
       if(length(found_matrix_vars) > 0) {
